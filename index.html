@@ -108,7 +108,7 @@ dialog label{display:block;font-size:13px;color:var(--mute);margin:10px 0 4px}
 <datalist id="cards"></datalist>
 <label for="eG">Tag</label><select id="eG"></select>
 <label for="eN">Notes</label><textarea id="eN" rows="2"></textarea>
-<p><button class="btn ghost" id="eR" type="button">Auto-fill from photo</button> <a id="eV" target="_blank" rel="noopener">View original</a></p>
+<p><button class="btn ghost" id="eR" type="button">Auto-fill</button> <a id="eV" target="_blank" rel="noopener">View original</a></p>
 <div class="acts"><button class="btn ghost bad" id="eX">Delete</button><span class="grow"></span><button class="btn ghost" id="eCancel">Cancel</button><button class="btn" id="eS">Save</button></div>
 </dialog>
 <dialog id="info"><div id="infoBody"></div><div class="acts"><span class="grow"></span><button class="btn" id="infoX">Close</button></div></dialog>
@@ -150,7 +150,7 @@ async function addFiles(files){
       await put(o);items.push(o);added.push(o)
     }catch(e){toast('Could not read '+f.name+'. Try a JPG, PNG, or PDF.')}
   }
-  render();if(added.length===1)edit(added[0].id);autosync()
+  render();if(added.length===1){edit(added[0].id);$('#eR').click()}else if(added.length)(async()=>{let n=0;for(const o of added)if(await autoRead(o))n++;if(n)toast(`Auto-filled ${n} receipts. Check the details.`);autosync()})();autosync()
 }
 
 function fill(el,label,vals,fmt=x=>x){const v=el.value;el.innerHTML=`<option value="">${label}</option>`+[...new Set(vals)].filter(Boolean).sort().map(x=>`<option value="${esc(x)}">${esc(fmt(x))}</option>`).join('');el.value=[...el.options].some(o=>o.value===v)?v:''}
@@ -181,7 +181,7 @@ function edit(id){
   cur=items.find(i=>i.id===id);if(!cur)return;
   $('#eK').innerHTML='<option value="">None</option>'+CATS.map(c=>`<option>${c}</option>`).join('');
   $('#eM').value=cur.merchant;$('#eD').value=cur.date;$('#eA').value=cur.amount;$('#eC').value=cur.card;$('#eK').value=cur.category;$('#eN').value=cur.notes;
-  $('#eG').innerHTML='<option value="">None</option>'+TAGS.map(c=>`<option>${c}</option>`).join('');$('#eG').value=cur.tag||'';$('#eR').hidden=cur.type!=='img';setCcy(cc(cur));$('#eV').href=url(cur);$('#ed').showModal()
+  $('#eG').innerHTML='<option value="">None</option>'+TAGS.map(c=>`<option>${c}</option>`).join('');$('#eG').value=cur.tag||'';$('#eR').hidden=false;setCcy(cc(cur));$('#eV').href=url(cur);$('#ed').showModal()
 }
 $('#eS').onclick=async()=>{
   const cy=$('#eU').value==='Other'?$('#eO').value.trim().toUpperCase():$('#eU').value;if(!/^[A-Z]{3}$/.test(cy))return toast('Enter a 3-letter currency code, like GBP.');Object.assign(cur,{ccy:cy,updated:Date.now(),merchant:$('#eM').value.trim(),date:$('#eD').value||cur.date,amount:$('#eA').value.replace(',','.').replace(/[^0-9.]/g,''),card:$('#eC').value.trim(),category:$('#eK').value,tag:$('#eG').value,notes:$('#eN').value.trim()});
@@ -295,23 +295,54 @@ $('#stm').onchange=async e=>{
   }
   show(`<h3>${ok} matched, ${miss.length} without a receipt</h3><p class="mute">A match is the same amount within 4 days.</p>${miss.join('')}`)
 };
+const loadJs=u=>new Promise((ok,no)=>{const s=document.createElement('script');s.src=u;s.onload=ok;s.onerror=no;document.head.append(s)});
+const ocr=async b=>{if(!window.Tesseract)await loadJs('https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js');return(await Tesseract.recognize(b,'eng')).data.text};
+async function readText(it){
+  if(it.type==='img')return ocr(it.blob);
+  const V='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/';
+  if(!window.pdfjsLib){await loadJs(V+'pdf.min.js');const w=await(await fetch(V+'pdf.worker.min.js')).text();pdfjsLib.GlobalWorkerOptions.workerSrc=URL.createObjectURL(new Blob([w],{type:'text/javascript'}))}
+  const doc=await pdfjsLib.getDocument({data:await it.blob.arrayBuffer()}).promise;let text='';
+  for(let n=1;n<=Math.min(doc.numPages,3);n++){
+    const c=await(await doc.getPage(n)).getTextContent(),rows=[];
+    c.items.forEach(x=>{if(!x.str.trim())return;const y=x.transform[5];let r=rows.find(r=>Math.abs(r.y-y)<3);if(!r)rows.push(r={y,t:[]});r.t.push([x.transform[4],x.str])});
+    text+=rows.sort((a,b)=>b.y-a.y).map(r=>r.t.sort((a,b)=>a[0]-b[0]).map(z=>z[1]).join(' ')).join('\n')+'\n'
+  }
+  if(text.replace(/\s/g,'').length>40)return text;
+  const pg=await doc.getPage(1),vp=pg.getViewport({scale:2}),cv=document.createElement('canvas');cv.width=vp.width;cv.height=vp.height;
+  await pg.render({canvasContext:cv.getContext('2d'),viewport:vp}).promise;
+  return ocr(await new Promise(r=>cv.toBlob(r,'image/png')))
+}
+const nums=l=>[...l.matchAll(/\d+(?:[.,]\d{3})*[.,]\d{2}(?![.,]?\d)/g)].map(m=>{const t=m[0],d=t.search(/[.,]\d{2}$/);return +(t.slice(0,d).replace(/[.,]/g,'')+'.'+t.slice(d+1))});
+function parseReceipt(text){
+  const lines=text.split('\n').map(s=>s.trim()).filter(s=>s.length>2),o={};
+  const tl=lines.filter(l=>/total|i alt|\bsum\b|at betale|att betala|samtals|amount due|balance/i.test(l)&&!/sub\s*total|delsum/i.test(l)).flatMap(nums);
+  const amt=tl.length?Math.max(...tl):Math.max(0,...lines.flatMap(nums));
+  if(lines[0])o.merchant=lines[0].slice(0,40);
+  if(amt)o.amount=amt.toFixed(2);
+  const cm=text.match(/\b(DKK|EUR|USD|ISK|SEK|NOK)\b/i),cd=cm?cm[1].toUpperCase():/€/.test(text)?'EUR':/\$/.test(text)?'USD':/\bmva\b/i.test(text)?'NOK':/\bvsk\b/i.test(text)?'ISK':'';
+  if(cd)o.ccy=cd;
+  const im=text.match(/\b(20\d\d)[-\/.](\d{1,2})[-\/.](\d{1,2})\b/),dm=text.match(/(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})/);
+  let y,mo,d;
+  if(im){y=im[1];mo=+im[2];d=+im[3]}
+  else if(dm){d=+dm[1];mo=+dm[2];y=dm[3];if(mo>12&&d<=12)[d,mo]=[mo,d];if(y.length==2)y='20'+y}
+  if(y&&mo>=1&&mo<=12&&d>=1&&d<=31)o.date=`${y}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+  return o
+}
 $('#eR').onclick=async()=>{
-  const b=$('#eR');b.disabled=true;b.textContent='Reading…';
-  try{
-    if(!window.Tesseract)await new Promise((ok,no)=>{const s=document.createElement('script');s.src='https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';s.onload=ok;s.onerror=no;document.head.append(s)});
-    const{data:{text}}=await Tesseract.recognize(cur.blob,'eng');
-    const lines=text.split('\n').map(s=>s.trim()).filter(s=>s.length>2);
-    const nums=l=>[...l.matchAll(/\d+(?:[.,]\d{3})*[.,]\d{2}(?![.,]?\d)/g)].map(m=>{const t=m[0],d=t.search(/[.,]\d{2}$/);return +(t.slice(0,d).replace(/[.,]/g,'')+'.'+t.slice(d+1))});
-    const tl=lines.filter(l=>/total|i alt|\bsum\b|at betale|att betala|samtals|amount due|balance/i.test(l)&&!/sub\s*total|delsum/i.test(l)).flatMap(nums);
-    const amt=tl.length?Math.max(...tl):Math.max(0,...lines.flatMap(nums));
-    const dm=text.match(/(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})/);
-    if(!$('#eM').value&&lines[0])$('#eM').value=lines[0].slice(0,40);
-    if(amt)$('#eA').value=amt.toFixed(2);const cm=text.match(/\b(DKK|EUR|USD|ISK|SEK|NOK)\b/i),cd=cm?cm[1].toUpperCase():/€/.test(text)?'EUR':/\$/.test(text)?'USD':/\bmva\b/i.test(text)?'NOK':/\bvsk\b/i.test(text)?'ISK':'';if(cd)setCcy(cd);
-    if(dm){let[,a,c,y]=dm,d=+a,mo=+c;if(mo>12&&d<=12)[d,mo]=[mo,d];y=y.length==2?'20'+y:y;const iso=`${y}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`;if(mo<=12&&!isNaN(new Date(iso)))$('#eD').value=iso}
-    toast('Filled in what could be read. Check the details before saving.')
-  }catch(x){toast('Could not read this photo. Auto-fill needs an internet connection.')}
-  b.disabled=false;b.textContent='Auto-fill from photo'
+  const b=$('#eR'),it=cur;b.disabled=true;b.textContent='Reading…';
+  try{const o=parseReceipt(await readText(it));
+    if(cur===it&&$('#ed').open){
+      if(!$('#eM').value&&o.merchant)$('#eM').value=o.merchant;
+      if(o.amount)$('#eA').value=o.amount;if(o.date)$('#eD').value=o.date;if(o.ccy)setCcy(o.ccy);
+      toast('Filled in what could be read. Check the details before saving.')}
+  }catch(x){toast('Could not read this file. Auto-fill needs an internet connection.')}
+  b.disabled=false;b.textContent='Auto-fill'
 };
+async function autoRead(o){
+  try{const p=parseReceipt(await readText(o));
+    if(!o.merchant&&p.merchant)o.merchant=p.merchant;if(p.amount)o.amount=p.amount;if(p.date)o.date=p.date;if(p.ccy)o.ccy=p.ccy;
+    o.updated=Date.now();await put(o);render();return true}catch(e){return false}
+}
 if('serviceWorker' in navigator)addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));
 const lsGet=k=>{try{return localStorage.getItem(k)}catch(e){return null}},lsSet=(k,v)=>{try{localStorage.setItem(k,v)}catch(e){}};
 const key=()=>lsGet('rb-key')||'',st=t=>{$('#syncSt').textContent=t};
