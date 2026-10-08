@@ -1,6 +1,11 @@
 // Cloudflare Pages Function: stores receipt details in D1 and files in R2.
 // Needs bindings DB (D1), BUCKET (R2) and the secret SYNC_KEY.
-export async function onRequest({ request, env, params }) {
+export async function onRequest(ctx) {
+  try { return await handle(ctx); }
+  catch (e) { return new Response('Server error: ' + e.message, { status: 500 }); }
+}
+
+async function handle({ request, env, params }) {
   const enc = new TextEncoder();
   const a = enc.encode(request.headers.get('Authorization') || '');
   const b = enc.encode('Bearer ' + (env.SYNC_KEY || ''));

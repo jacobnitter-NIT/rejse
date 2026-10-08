@@ -304,7 +304,7 @@ $('#eR').onclick=async()=>{
 if('serviceWorker' in navigator)addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));
 const lsGet=k=>{try{return localStorage.getItem(k)}catch(e){return null}},lsSet=(k,v)=>{try{localStorage.setItem(k,v)}catch(e){}};
 const key=()=>lsGet('rb-key')||'',st=t=>{$('#syncSt').textContent=t};
-const api=(p,o={})=>fetch('/api/'+p,{...o,headers:{...o.headers,Authorization:'Bearer '+key()}}).then(r=>{if(r.status===401)throw new Error('Wrong sync key');if(!r.ok)throw new Error('Sync server error '+r.status);return r});
+const api=(p,o={})=>fetch('/api/'+p,{...o,headers:{...o.headers,Authorization:'Bearer '+key()}}).then(async r=>{if(r.status===401)throw new Error('Wrong sync key');if(!r.ok)throw new Error('Sync server error '+r.status+': '+(await r.text()).slice(0,160));return r});
 const queueDel=id=>{if(!key())return;const d=JSON.parse(lsGet('rb-del')||'[]');d.push(id);lsSet('rb-del',JSON.stringify(d))};
 let syncing=false;
 const autosync=()=>{clearTimeout(autosync.t);autosync.t=setTimeout(sync,800)};
