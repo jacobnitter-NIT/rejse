@@ -3,7 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Receipt Box</title>
+<title>Receipt Box · Private rejser</title>
+<meta name="referrer" content="no-referrer">
+<link rel="stylesheet" href="trips.css">
+<script src="trip-engine.js" defer></script>
+<script src="scanner.js" defer></script>
+<script src="trips.js" defer></script>
 <meta name="theme-color" content="#14213d"><link rel="manifest" href="manifest.webmanifest"><link rel="icon" href="icon.svg"><link rel="apple-touch-icon" href="icon.svg">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
 <style>
@@ -63,7 +68,9 @@ dialog label{display:block;font-size:13px;color:var(--mute);margin:10px 0 4px}
 <body>
 <main>
 <h1>Receipt Box</h1>
-<p class="sub">Snap, sort, and bundle card receipts into one PDF. Everything stays on this device.</p>
+<p class="sub">Kvitteringer, AI-aflæsning og privat rejseafregning.</p>
+<div class="tabs"><button class="btn ghost active" id="tabReceipts">Kvitteringer</button><button class="btn ghost" id="tabTrips">Private rejser</button></div>
+<section id="receiptView">
 <div class="add">
 <button class="btn" id="bCam">Take photo</button>
 <button class="btn ghost" id="bPho">Photos</button>
@@ -72,6 +79,7 @@ dialog label{display:block;font-size:13px;color:var(--mute);margin:10px 0 4px}
 <input type="file" id="cam" accept="image/*" capture="environment" hidden>
 <input type="file" id="pho" accept="image/*" multiple hidden>
 <input type="file" id="pdf" accept="application/pdf" multiple hidden>
+<label class="ai-note"><input type="checkbox" id="autoCrop" checked> Automatisk beskæring · originalen bevares</label>
 <div class="drop" id="drop">Or drop photos and PDFs here</div>
 <div class="more"><button class="btn ghost" id="bChart">Charts</button><button class="btn ghost" id="bMatch">Match statement</button><button class="btn ghost" id="bBak">Backup</button><button class="btn ghost" id="bRes">Restore</button><button class="btn ghost" id="bSync">Sync</button><button class="btn ghost" id="bKey">Sync key</button><span class="mute" id="syncSt" style="align-self:center"></span></div>
 <input type="file" id="stm" accept=".csv,text/csv" hidden><input type="file" id="rst" accept=".json,application/json" hidden>
@@ -88,6 +96,8 @@ dialog label{display:block;font-size:13px;color:var(--mute);margin:10px 0 4px}
 </div>
 <div class="meta"><span id="cnt"></span><b id="tot"></b></div>
 <div class="tape" id="list" style="margin:14px 0"></div>
+</section>
+<section id="tripsView" hidden><div class="trip-actions"><button class="btn" id="newTrip">+ Ny rejse</button><button class="btn ghost" id="joinTrip">Åbn privat rejselink</button></div><div id="tripsContent"></div></section>
 </main>
 
 <div class="bar" id="bar"><div>
@@ -108,7 +118,9 @@ dialog label{display:block;font-size:13px;color:var(--mute);margin:10px 0 4px}
 <datalist id="cards"></datalist>
 <label for="eG">Tag</label><select id="eG"></select>
 <label for="eN">Notes</label><textarea id="eN" rows="2"></textarea>
-<p><button class="btn ghost" id="eR" type="button">Auto-fill</button> <a id="eV" target="_blank" rel="noopener">View original</a></p>
+<img id="receiptPreview" class="scanner-preview" hidden alt="Kvitteringsbillede"><p id="scanNote" class="ai-note"></p>
+<div class="trip-actions"><button class="btn ghost" id="cropReceipt">Beskær</button><button class="btn ghost" id="restoreReceipt" hidden>Gendan original</button><button class="btn ghost" id="receiptToTripButton">Tilføj til rejse</button></div>
+<p><button class="btn ghost" id="eR" type="button">Læs med AI</button> <a id="eV" target="_blank" rel="noopener">View original</a></p>
 <div class="acts"><button class="btn ghost bad" id="eX">Delete</button><span class="grow"></span><button class="btn ghost" id="eCancel">Cancel</button><button class="btn" id="eS">Save</button></div>
 </dialog>
 <dialog id="info"><div id="infoBody"></div><div class="acts"><span class="grow"></span><button class="btn" id="infoX">Close</button></div></dialog>
@@ -173,7 +185,7 @@ function render(){
   $('#cnt').textContent=`${l.length} receipt${l.length===1?'':'s'} shown`;
   $('#tot').textContent=tots(l);
   $('#all').checked=l.length>0&&l.every(i=>sel.has(i.id));
-  const n=sel.size;$('#bar').classList.toggle('on',n>0);
+  const n=sel.size;$('#bar').classList.toggle('on',n>0&&!$('#receiptView').hidden);
   $('#selInfo').textContent=`${n} selected, ${tots(items.filter(i=>sel.has(i.id)))}`;
 }
 
@@ -181,10 +193,10 @@ function edit(id){
   cur=items.find(i=>i.id===id);if(!cur)return;
   $('#eK').innerHTML='<option value="">None</option>'+CATS.map(c=>`<option>${c}</option>`).join('');
   $('#eM').value=cur.merchant;$('#eD').value=cur.date;$('#eA').value=cur.amount;$('#eC').value=cur.card;$('#eK').value=cur.category;$('#eN').value=cur.notes;
-  $('#eG').innerHTML='<option value="">None</option>'+TAGS.map(c=>`<option>${c}</option>`).join('');$('#eG').value=cur.tag||'';$('#eR').hidden=false;setCcy(cc(cur));$('#eV').href=url(cur);$('#ed').showModal()
+  $('#eG').innerHTML='<option value="">None</option>'+TAGS.map(c=>`<option>${c}</option>`).join('');$('#eG').value=cur.tag||'';$('#eR').hidden=false;setCcy(cc(cur));$('#eV').href=url(cur);$('#ed').showModal();refreshReceiptPreview()
 }
 $('#eS').onclick=async()=>{
-  const cy=$('#eU').value==='Other'?$('#eO').value.trim().toUpperCase():$('#eU').value;if(!/^[A-Z]{3}$/.test(cy))return toast('Enter a 3-letter currency code, like GBP.');Object.assign(cur,{ccy:cy,updated:Date.now(),merchant:$('#eM').value.trim(),date:$('#eD').value||cur.date,amount:$('#eA').value.replace(',','.').replace(/[^0-9.]/g,''),card:$('#eC').value.trim(),category:$('#eK').value,tag:$('#eG').value,notes:$('#eN').value.trim()});
+  const cy=$('#eU').value==='Other'?$('#eO').value.trim().toUpperCase():$('#eU').value;if(!/^[A-Z]{3}$/.test(cy))return toast('Enter a 3-letter currency code, like GBP.');Object.assign(cur,{ccy:cy,updated:Date.now(),merchant:$('#eM').value.trim(),date:$('#eD').value||cur.date,amount:$('#eA').value.replace(',','.').replace(/[^0-9.\-]/g,''),card:$('#eC').value.trim(),category:$('#eK').value,tag:$('#eG').value,notes:$('#eN').value.trim()});
   await put(cur);$('#ed').close();render();autosync()
 };
 $('#eCancel').onclick=()=>$('#ed').close();
@@ -267,16 +279,16 @@ const setCcy=c=>{const k=CURS.includes(c);$('#eU').value=k?c:'Other';$('#eO').va
 $('#eU').onchange=()=>{const o=$('#eU').value!=='Other';$('#eO').disabled=o;if(!o)$('#eO').focus()};
 const b64=b=>new Promise(r=>{const f=new FileReader();f.onload=()=>r(f.result);f.readAsDataURL(b)});
 $('#bBak').onclick=async()=>{
-  if(!items.length)return toast('Nothing to back up yet.');
-  const out=[];for(const i of items){const o={...i,blob:await b64(i.blob)};if(i.thumb)o.thumb=await b64(i.thumb);out.push(o)}
-  save(new Blob([JSON.stringify({v:1,items:out})],{type:'application/json'}),`receipt-box-backup-${new Date().toISOString().slice(0,10)}.json`)
+  await tripReady;if(!items.length&&!trips.length)return toast('Nothing to back up yet.');
+  const out=[];for(const i of items){const o={...i,blob:await b64(i.blob)};if(i.thumb)o.thumb=await b64(i.thumb);if(i.original)o.original=await b64(i.original);out.push(o)}
+  save(new Blob([JSON.stringify({v:2,items:out,trips})],{type:'application/json'}),`receipt-box-backup-${new Date().toISOString().slice(0,10)}.json`)
 };
 $('#bRes').onclick=()=>$('#rst').click();
 $('#rst').onchange=async e=>{
   const f=e.target.files[0];e.target.value='';if(!f)return;
   try{const d=JSON.parse(await f.text());let n=0;
-    for(const o of d.items){if(items.some(i=>i.id===o.id))continue;o.blob=await(await fetch(o.blob)).blob();if(o.thumb)o.thumb=await(await fetch(o.thumb)).blob();await put(o);items.push(o);n++}
-    render();autosync();toast(`Restored ${n} receipt(s).`)}catch(x){toast('That file is not a Receipt Box backup.')}
+    for(const o of d.items||[]){if(items.some(i=>i.id===o.id))continue;o.blob=await(await fetch(o.blob)).blob();if(o.thumb)o.thumb=await(await fetch(o.thumb)).blob();if(o.original)o.original=await(await fetch(o.original)).blob();await put(o);items.push(o);n++}
+    const restoredTrips=await restoreTrips(d.trips);render();autosync();toast(`Restored ${n} receipt(s), ${restoredTrips} trips.`)}catch(x){toast('That file is not a Receipt Box backup.')}
 };
 function csvRows(t){const r=[];let row=[],c='',q=false;for(let k=0;k<t.length;k++){const ch=t[k];if(q){if(ch=='"'&&t[k+1]=='"'){c+='"';k++}else if(ch=='"')q=false;else c+=ch}else if(ch=='"')q=true;else if(ch==','){row.push(c);c=''}else if(ch=='\n'||ch=='\r'){if(ch=='\r'&&t[k+1]=='\n')k++;row.push(c);c='';if(row.some(x=>x.trim()))r.push(row);row=[]}else c+=ch}row.push(c);if(row.some(x=>x.trim()))r.push(row);return r}
 $('#bMatch').onclick=()=>$('#stm').click();
@@ -329,18 +341,18 @@ function parseReceipt(text){
   return o
 }
 $('#eR').onclick=async()=>{
-  const b=$('#eR'),it=cur;b.disabled=true;b.textContent='Reading…';
-  try{const o=parseReceipt(await readText(it));
+  const b=$('#eR'),it=cur,before={merchant:$('#eM').value,amount:$('#eA').value,date:$('#eD').value,category:$('#eK').value,card:$('#eC').value,currency:$('#eU').value};b.disabled=true;b.textContent='Reading…';
+  try{const o=await receiptRead(it);
     if(cur===it&&$('#ed').open){
       if(!$('#eM').value&&o.merchant)$('#eM').value=o.merchant;
-      if(o.amount)$('#eA').value=o.amount;if(o.date)$('#eD').value=o.date;if(o.ccy)setCcy(o.ccy);
-      toast('Filled in what could be read. Check the details before saving.')}
+      if(o.amount!=null&&$('#eA').value===before.amount)$('#eA').value=o.amount;if(o.category&&$('#eK').value===before.category)$('#eK').value=o.category;if(o.card&&!$('#eC').value)$('#eC').value=o.card;refreshReceiptPreview();if(o.date&&$('#eD').value===before.date)$('#eD').value=o.date;if(o.ccy&&$('#eU').value===before.currency)setCcy(o.ccy);
+      toast(o.source==='ai'?'AI har udfyldt forslag. Kontrollér og gem.':'Tekstaflæsning anvendt. Se status under billedet.')}
   }catch(x){toast('Could not read this file. Auto-fill needs an internet connection.')}
-  b.disabled=false;b.textContent='Auto-fill'
+  b.disabled=false;b.textContent='Læs med AI'
 };
 async function autoRead(o){
-  try{const p=parseReceipt(await readText(o));
-    if(!o.merchant&&p.merchant)o.merchant=p.merchant;if(p.amount)o.amount=p.amount;if(p.date)o.date=p.date;if(p.ccy)o.ccy=p.ccy;
+  try{const p=await receiptRead(o);
+    if(!o.merchant&&p.merchant)o.merchant=p.merchant;if(p.amount!=null)o.amount=p.amount;if(p.category)o.category=p.category;if(p.card&&!o.card)o.card=p.card;if(p.date)o.date=p.date;if(p.ccy)o.ccy=p.ccy;
     o.updated=Date.now();await put(o);render();return true}catch(e){return false}
 }
 if('serviceWorker' in navigator)addEventListener('load',()=>navigator.serviceWorker.register('sw.js').catch(()=>{}));
@@ -362,17 +374,17 @@ async function sync(manual){
       if(r.deleted){if(l&&(l.updated||0)<=r.updated){await del(l.id);items=items.filter(i=>i!==l);sel.delete(l.id);changed=true}continue}
       if(l&&(l.updated||0)>=r.updated)continue;
       const o={...r.data,updated:r.updated};
-      if(l){o.blob=l.blob;o.thumb=l.thumb}
-      else{o.blob=await(await api(`files/${r.id}?k=blob`)).blob();if(o.type==='img')o.thumb=await(await api(`files/${r.id}?k=thumb`)).blob()}
+      if(l&&l.imageVersion===o.imageVersion){o.blob=l.blob;o.thumb=l.thumb;o.original=l.original}
+      else{o.blob=await(await api(`files/${r.id}?k=blob`)).blob();if(o.type==='img')o.thumb=await(await api(`files/${r.id}?k=thumb`)).blob();if(o.hasOriginal)o.original=await(await api(`files/${r.id}?k=original`)).blob();if(l)resetReceiptUrls(l)}
       await put(o);items=items.filter(i=>i.id!==o.id);items.push(o);changed=true
     }
     for(const l of items){
       const r=rm.get(l.id);
       if(r&&!r.deleted&&(l.updated||0)<=r.updated)continue;
       const up=(k,b)=>api(`files/${l.id}?k=${k}`,{method:'PUT',headers:{'Content-Type':b.type||'application/octet-stream'},body:b});
-      if(!r||r.deleted){await up('blob',l.blob);if(l.thumb)await up('thumb',l.thumb)}
+      if(!r||r.deleted||r.data.imageVersion!==l.imageVersion){await up('blob',l.blob);if(l.thumb)await up('thumb',l.thumb);if(l.original)await up('original',l.original)}
       if(!l.updated){l.updated=Date.now();await put(l)}
-      const{blob,thumb,...meta}=l;
+      const{blob,thumb,original,...meta}=l;meta.hasOriginal=!!original;
       await api('receipts/'+l.id,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(meta)})
     }
     if(changed)render();
@@ -387,3 +399,4 @@ addEventListener('online',autosync);addEventListener('focus',autosync);
 </script>
 </body>
 </html>
+

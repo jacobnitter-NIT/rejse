@@ -1,16 +1,13 @@
+import {handleFeature, ownerAuthorized} from '../../server-features.js';
 // Cloudflare Pages Function: stores receipt details in D1 and files in R2.
 // Needs bindings DB (D1), BUCKET (R2) and the secret SYNC_KEY.
 export async function onRequest(ctx) {
-  try { return await handle(ctx); }
+  try { const feature = await handleFeature(ctx); return feature || await handle(ctx); }
   catch (e) { return new Response('Server error: ' + e.message, { status: 500 }); }
 }
 
 async function handle({ request, env, params }) {
-  const enc = new TextEncoder();
-  const a = enc.encode(request.headers.get('Authorization') || '');
-  const b = enc.encode('Bearer ' + (env.SYNC_KEY || ''));
-  if (!env.SYNC_KEY || a.length !== b.length || !crypto.subtle.timingSafeEqual(a, b))
-    return new Response('Unauthorized', { status: 401 });
+  if (!ownerAuthorized(request, env)) return new Response('Unauthorized', { status: 401 });
 
   const [kind, id] = params.path || [];
   const url = new URL(request.url), m = request.method;
@@ -31,13 +28,13 @@ async function handle({ request, env, params }) {
     if (m === 'DELETE') {
       await env.DB.prepare("INSERT INTO receipts(id,data,updated,deleted) VALUES(?1,'{}',?2,1) ON CONFLICT(id) DO UPDATE SET data='{}',updated=?2,deleted=1")
         .bind(id, Date.now()).run();
-      await env.BUCKET.delete([id + '/blob', id + '/thumb']);
+      await env.BUCKET.delete([id + '/blob', id + '/thumb', id + '/original']);
       return J({ ok: 1 });
     }
   }
   if (kind === 'files' && okId) {
     const k = url.searchParams.get('k');
-    if (k !== 'blob' && k !== 'thumb') return J({ error: 'bad k' }, 400);
+    if (k !== 'blob' && k !== 'thumb' && k !== 'original') return J({ error: 'bad k' }, 400);
     if (m === 'PUT') {
       await env.BUCKET.put(id + '/' + k, await request.arrayBuffer(),
         { httpMetadata: { contentType: request.headers.get('Content-Type') || 'application/octet-stream' } });
