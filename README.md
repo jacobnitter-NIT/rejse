@@ -37,3 +37,5 @@ The existing D1 **DB**, R2 **BUCKET** and **SYNC_KEY** bindings are reused. New,
 - Holiday and itinerary edits carry versions. A stale edit returns a conflict and leaves the editing form available rather than overwriting a companion's newer work. Use “Hent seneste” after closing the editor to review the latest plan.
 
 `node --test tests/*.test.cjs` uses Node 24's built-in SQLite for portal integration tests against the actual SQL statements. It checks registration/login/logout, password changes, origin checks, invitation binding/expiry/cancellation, cross-holiday isolation, role enforcement, immediate membership revocation, concurrency, private document downloads and authentication rate limits.
+
+Portal administrators are stored separately in `holiday_admins`. They can manage all holidays and their invitations/documents. Ordinary account access remains limited to explicit membership. Administrator status is shown beside the signed-in name. Invalid owner registration without an invitation now explicitly requests the correct Sync key instead of reporting an expired invitation.

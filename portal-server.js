@@ -68,46 +68,14 @@ async function details(db,row){const id=row.id;const [events,documents,members]=
 const mimeTypes=new Set(['application/pdf','image/jpeg','image/png','image/webp']);
 export function validFile(bytes,type){if(!mimeTypes.has(type)||bytes.length<12)return false;const h=String.fromCharCode(...bytes.slice(0,12));return type==='application/pdf'?h.startsWith('%PDF-'):type==='image/jpeg'?bytes[0]===255&&bytes[1]===216&&bytes[2]===255:type==='image/png'?bytes[0]===137&&h.slice(1,4)==='PNG':h.startsWith('RIFF')&&h.slice(8,12)==='WEBP'}
 
-// BEGIN TEMPORARY_ENCRYPTED_ADMIN_SETUP
-const adminSetupConfig={"expires":1792874244698,"hash":"12e5110016cef723df151ccd230fb19dabad0ca7a4da8eeea467f31c3aaf7a5f","emailHash":"01ff7dd6c03d5932a2e9d8f55f67c02eb8c2bbe335cc90391695505f67cb2439","envelope":{"key":"xP+LlWHk3YOe72rvIY/0QEC9jh5MGzaPkbHUwgLgkPclqX7wpZz+rfa7SAfE1u/VV3xtZk/2uMFD54YEgvQpQ0bYLlBld3YqQxCeoJkVagNTmXd7MDZvkM7QVRcyLiT6pOEEk7KCc5wiuGlwHvBb0OJc8IlAoCccsuc6SfDJ8+1jRUZP8pvxE/bf1Nhb9G3/zWVDLvtuP9cS7l49LwJ7teV7rHYls3VEqYCNQaK8JgSHK33OAa5yfpf3q6mKdnqA2DNQDgBv/TJizwkvwpdxi13BcBE2FsHKluIxqnPS1gqgw31NFeYMen8bgawk+/a7ULiOWs/qiXLXIG1OQbJt8w==","iv":"OH30g+ax/Zl2On2+","data":"kfRTO9hOotVMwPvT3rhqTXUlXYFW/2SFfTRjV6zlUSO/dbuccd43eDuaOr1y/vdUCR5L61hkOJ9F+kpts+gBg+4VkK3nDBC7ClITOAoJLSSwfVo3P4d+iVn+gNITnjGIbSEaT7dWzUOcvdHIKAYl3H9vr4i+nsgh0TbK4DHRc0P2fLmxacqAH56TyKUpEN/X9we6SCeWHY7HBT5bqEaHUb6D0W+FcSdlvf3PDz8HzAyo8xAcSvyUZjYBFxJbqL3Haz0="}};
-async function temporaryAdminSetup(db){
- const c=adminSetupConfig;if(Date.now()>c.expires)return;
- await db.batch([
-  db.prepare('CREATE TABLE IF NOT EXISTS holiday_setup_used (id TEXT PRIMARY KEY,used INTEGER NOT NULL)'),
-  db.prepare('CREATE TABLE IF NOT EXISTS holiday_setup_keys (id TEXT PRIMARY KEY,private_jwk TEXT NOT NULL,public_jwk TEXT NOT NULL)')
- ]);
- const used=await db.prepare('SELECT id FROM holiday_setup_used WHERE id=?').bind(c.hash).first();if(used)return{complete:true};
- let pair=await db.prepare('SELECT * FROM holiday_setup_keys WHERE id=?').bind(c.hash).first();
- if(!pair){const generated=await crypto.subtle.generateKey({name:'RSA-OAEP',modulusLength:2048,publicExponent:new Uint8Array([1,0,1]),hash:'SHA-256'},true,['encrypt','decrypt']);const privateJwk=await crypto.subtle.exportKey('jwk',generated.privateKey),publicJwk=await crypto.subtle.exportKey('jwk',generated.publicKey);await db.prepare('INSERT OR IGNORE INTO holiday_setup_keys(id,private_jwk,public_jwk) VALUES(?,?,?)').bind(c.hash,JSON.stringify(privateJwk),JSON.stringify(publicJwk)).run();pair=await db.prepare('SELECT * FROM holiday_setup_keys WHERE id=?').bind(c.hash).first()}
- if(!c.envelope)return{publicKey:JSON.parse(pair.public_jwk)};
- const bytes=s=>Uint8Array.from(atob(s),v=>v.charCodeAt(0));
- const rsa=await crypto.subtle.importKey('jwk',JSON.parse(pair.private_jwk),{name:'RSA-OAEP',hash:'SHA-256'},false,['decrypt']);
- const aesBytes=await crypto.subtle.decrypt({name:'RSA-OAEP'},rsa,bytes(c.envelope.key));
- const aes=await crypto.subtle.importKey('raw',aesBytes,'AES-GCM',false,['decrypt']);
- const decrypted=await crypto.subtle.decrypt({name:'AES-GCM',iv:bytes(c.envelope.iv)},aes,bytes(c.envelope.data));
- const d=JSON.parse(new TextDecoder().decode(decrypted)),email=emailAddress(d.email);
- if(!same(await hashToken(d.token),c.hash)||!same(await hashToken(email),c.emailHash))fail('Ugyldig engangsopsætning',403);
- const salt=random(),hashed=await passwordHash(password(d.password),salt),name=clean(d.name,100,true);
- await db.batch([
-  db.prepare('INSERT INTO holiday_setup_used(id,used) VALUES(?,?)').bind(c.hash,Date.now()),
-  db.prepare('INSERT INTO holiday_accounts(id,email,name,salt,password_hash,created) VALUES(?,?,?,?,?,?) ON CONFLICT(email) DO UPDATE SET name=excluded.name,salt=excluded.salt,password_hash=excluded.password_hash').bind(uuid(),email,name,salt,hashed,Date.now()),
-  db.prepare('INSERT OR IGNORE INTO holiday_admins(user_id) SELECT id FROM holiday_accounts WHERE email=?').bind(email),
-  db.prepare('DELETE FROM holiday_sessions WHERE user_id IN (SELECT id FROM holiday_accounts WHERE email=?)').bind(email),
-  db.prepare('DELETE FROM holiday_setup_keys WHERE id=?').bind(c.hash)
- ]);
- return{complete:true};
-}
-// END TEMPORARY_ENCRYPTED_ADMIN_SETUP
+
 async function portal({request,env,params}){
  const path=params.path||[];if(path[0]!=='portal')return null;
  const method=request.method,url=new URL(request.url),db=env.DB;
  if(!['GET','HEAD'].includes(method)&&(request.headers.get('Origin')!==url.origin||request.headers.get('X-Portal-Request')!=='1'))fail('Forespørgslen skal komme fra ferieportalen',403);
  await schema(db);
  const [,kind,id,sub,child]=path;
- // BEGIN TEMPORARY_SETUP_DISPATCH
- if(kind==='auth'&&id==='setup-key'&&method==='GET'){const result=await temporaryAdminSetup(db);if(!result)fail('Engangsopsætningen er udløbet',404);return reply(result)}
- if(adminSetupConfig.envelope)await temporaryAdminSetup(db);
- // END TEMPORARY_SETUP_DISPATCH
+
  if(kind==='auth'){
 
 
