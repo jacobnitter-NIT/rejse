@@ -11,7 +11,7 @@ async function holiday(env,cookie){return(await expect(await call(env,'holidays'
 async function invited(env,owner,id,email='companion@example.com',role='viewer'){const invitation=await expect(await call(env,`holidays/${id}/invites`,'POST',{email,role},owner),201);const cookie=await register(env,email,{invite:invitation.token});await expect(await call(env,'invitations/'+invitation.token,'POST',null,cookie),200);return{cookie,token:invitation.token}}
 test('account authentication, same-origin enforcement, logout and password rotation',async()=>{
  const env=environment();assert.equal((await call(env,'holidays')).status,401);
- assert.equal((await call(env,'auth/register','POST',{email:'bad@example.com',password,name:'Bad'})).status,404);
+ assert.equal((await call(env,'auth/register','POST',{email:'bad@example.com',password,name:'Bad'})).status,401);
  const cookie=await register(env);assert.match(cookie,/__Host-holiday_session=/);
  const me=await expect(await call(env,'auth/me','GET',null,cookie),200);assert.equal(me.user.email,'owner@example.com');assert.equal(me.user.password_hash,undefined);
  assert.equal((await call(env,'holidays','POST',sample,cookie,{Origin:'https://evil.example'})).status,403);
@@ -64,4 +64,15 @@ test('documents require membership, enforce types, prevent cross-holiday access 
 test('reject invalid dates and time zones, whitelist fields and throttle repeated auth attempts',async()=>{
  const {validateHoliday,validateEvent}=await moduleReady;assert.throws(()=>validateHoliday({...sample,start:'2027-02-30'}));assert.throws(()=>validateHoliday({...sample,end:'2029-01-01'}));assert.throws(()=>validateEvent({...flight,startZone:'invalid zone'}));assert.equal(validateEvent({...flight,SYNC_KEY:'secret'}).SYNC_KEY,undefined);assert.equal(validateHoliday({...sample,owner_id:'attacker'}).owner_id,undefined);
  const env=environment();for(let i=0;i<15;i++)assert.equal((await call(env,'auth/login','POST',{email:'brute@example.com',password})).status,401);assert.equal((await call(env,'auth/login','POST',{email:'brute@example.com',password})).status,429);
+});
+
+test('portal administrators can manage holidays while ordinary accounts stay isolated',async()=>{
+ const env=environment(),owner=await register(env),id=await holiday(env,owner),adminCookie=await register(env,'admin@example.com');
+ const admin=env.raw.prepare('SELECT id FROM holiday_accounts WHERE email=?').get('admin@example.com');env.raw.prepare('INSERT INTO holiday_admins(user_id) VALUES(?)').run(admin.id);
+ assert.equal((await expect(await call(env,'auth/me','GET',null,adminCookie),200)).user.admin,1);
+ const list=await expect(await call(env,'holidays','GET',null,adminCookie),200);assert.equal(list.holidays.length,1);assert.equal(list.holidays[0].role,'admin');
+ const detail=await expect(await call(env,'holidays/'+id,'GET',null,adminCookie),200);assert.equal(detail.holiday.role,'admin');
+ await expect(await call(env,`holidays/${id}/events`,'POST',flight,adminCookie),201);
+ await expect(await call(env,`holidays/${id}/invites`,'POST',{email:'invited@example.com',role:'viewer'},adminCookie),201);
+ assert.equal((await call(env,'auth/bootstrap','POST',{email:'attacker@example.com',password,name:'Attacker',token:'f'.repeat(64)})).status,404);
 });

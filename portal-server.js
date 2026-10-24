@@ -32,6 +32,7 @@ async function schema(db){
  if(!db)fail('Ferieportal kræver den eksisterende D1-binding DB',503);
  if(!ready.has(db)){const p=db.batch([
   'CREATE TABLE IF NOT EXISTS holiday_accounts (id TEXT PRIMARY KEY,email TEXT NOT NULL UNIQUE,name TEXT NOT NULL,salt TEXT NOT NULL,password_hash TEXT NOT NULL,created INTEGER NOT NULL)',
+  'CREATE TABLE IF NOT EXISTS holiday_admins (user_id TEXT PRIMARY KEY)',
   'CREATE TABLE IF NOT EXISTS holiday_sessions (token_hash TEXT PRIMARY KEY,user_id TEXT NOT NULL,expires INTEGER NOT NULL)',
   'CREATE TABLE IF NOT EXISTS holidays (id TEXT PRIMARY KEY,owner_id TEXT NOT NULL,data TEXT NOT NULL,version INTEGER NOT NULL DEFAULT 1,updated INTEGER NOT NULL)',
   'CREATE TABLE IF NOT EXISTS holiday_members (holiday_id TEXT NOT NULL,user_id TEXT NOT NULL,role TEXT NOT NULL,PRIMARY KEY(holiday_id,user_id))',
@@ -49,13 +50,13 @@ async function passwordHash(password,salt){const key=await crypto.subtle.importK
 function password(value){if(typeof value!=='string'||value.length<12||value.length>128)fail('Adgangskoden skal være mellem 12 og 128 tegn');return value}
 function same(a,b){let d=a.length^b.length;for(let i=0;i<Math.max(a.length,b.length);i++)d|=(a.charCodeAt(i)||0)^(b.charCodeAt(i)||0);return d===0}
 function cookieToken(request){return request.headers.get('Cookie')?.match(/(?:^|;\s*)__Host-holiday_session=([a-f0-9]{64})(?:;|$)/)?.[1]||''}
-async function session(request,db){const token=cookieToken(request);if(!token)return null;return db.prepare('SELECT a.id,a.email,a.name FROM holiday_sessions s JOIN holiday_accounts a ON a.id=s.user_id WHERE s.token_hash=? AND s.expires>?').bind(await hashToken(token),Date.now()).first()}
-async function issueSession(db,account){const token=random();await db.batch([db.prepare('DELETE FROM holiday_sessions WHERE expires<?').bind(Date.now()),db.prepare('INSERT INTO holiday_sessions(token_hash,user_id,expires) VALUES(?,?,?)').bind(await hashToken(token),account.id,Date.now()+30*DAY)]);return reply({user:{id:account.id,email:account.email,name:account.name}},200,{'Set-Cookie':`__Host-holiday_session=${token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=2592000`})}
+async function session(request,db){const token=cookieToken(request);if(!token)return null;return db.prepare('SELECT a.id,a.email,a.name,CASE WHEN adm.user_id IS NULL THEN 0 ELSE 1 END AS admin FROM holiday_sessions s JOIN holiday_accounts a ON a.id=s.user_id LEFT JOIN holiday_admins adm ON adm.user_id=a.id WHERE s.token_hash=? AND s.expires>?').bind(await hashToken(token),Date.now()).first()}
+async function issueSession(db,account){const token=random();await db.batch([db.prepare('DELETE FROM holiday_sessions WHERE expires<?').bind(Date.now()),db.prepare('INSERT INTO holiday_sessions(token_hash,user_id,expires) VALUES(?,?,?)').bind(await hashToken(token),account.id,Date.now()+30*DAY)]);const admin=!!await db.prepare('SELECT user_id FROM holiday_admins WHERE user_id=?').bind(account.id).first();return reply({user:{id:account.id,email:account.email,name:account.name,admin}},200,{'Set-Cookie':`__Host-holiday_session=${token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=2592000`})}
 async function throttle(db,request,email){const now=Date.now(),window=Math.floor(now/(10*60*1000)),ip=request.headers.get('CF-Connecting-IP')||'local';for(const raw of ['ip:'+ip,'email:'+email]){const key=await hashToken(raw);await db.prepare('INSERT INTO holiday_auth_limits(key,attempts,window) VALUES(?,1,?) ON CONFLICT(key) DO UPDATE SET attempts=CASE WHEN window=excluded.window THEN attempts+1 ELSE 1 END,window=excluded.window').bind(key,window).run();const r=await db.prepare('SELECT attempts FROM holiday_auth_limits WHERE key=?').bind(key).first();if(r.attempts>15)fail('For mange forsøg. Vent ti minutter, og prøv igen.',429)}await db.prepare('DELETE FROM holiday_auth_limits WHERE window<?').bind(window-1).run()}
 async function invite(db,token){if(!/^[a-f0-9]{64}$/.test(token||''))fail('Invitationen er ugyldig eller udløbet',404);const row=await db.prepare('SELECT i.*,h.data FROM holiday_invites i JOIN holidays h ON h.id=i.holiday_id WHERE i.token_hash=? AND i.expires>?').bind(await hashToken(token),Date.now()).first();if(!row)fail('Invitationen er ugyldig eller udløbet',404);return row}
-async function membership(db,holidayId,user){if(!validId(holidayId))fail('Ferien findes ikke',404);const row=await db.prepare('SELECT h.*,m.role FROM holidays h JOIN holiday_members m ON h.id=m.holiday_id WHERE h.id=? AND m.user_id=?').bind(holidayId,user.id).first();if(!row)fail('Du har ikke adgang til denne ferie',404);return row}
-const editRole=m=>{if(!['owner','editor'].includes(m.role))fail('Du har læseadgang. Kun ejeren og redaktører kan ændre planen.',403)};
-const ownerRole=m=>{if(m.role!=='owner')fail('Kun ferieejeren kan administrere adgang',403)};
+async function membership(db,holidayId,user){if(!validId(holidayId))fail('Ferien findes ikke',404);if(user.admin){const row=await db.prepare('SELECT * FROM holidays WHERE id=?').bind(holidayId).first();if(!row)fail('Ferien findes ikke',404);return{...row,role:'admin'}}const row=await db.prepare('SELECT h.*,m.role FROM holidays h JOIN holiday_members m ON h.id=m.holiday_id WHERE h.id=? AND m.user_id=?').bind(holidayId,user.id).first();if(!row)fail('Du har ikke adgang til denne ferie',404);return row}
+const editRole=m=>{if(!['owner','editor','admin'].includes(m.role))fail('Du har læseadgang. Kun ejeren og redaktører kan ændre planen.',403)};
+const ownerRole=m=>{if(!['owner','admin'].includes(m.role))fail('Kun ferieejeren kan administrere adgang',403)};
 function version(request){const n=Number(request.headers.get('If-Match'));if(!Number.isSafeInteger(n)||n<1)fail('Hent den seneste version før du gemmer',409);return n}
 function changed(result){if(!result.meta?.changes)fail('Planen er ændret af en rejsefælle. Luk vinduet og hent den nyeste version. Dine indtastninger er ikke gemt.',409)}
 const publicHoliday=row=>({id:row.id,...JSON.parse(row.data),version:row.version,updated:row.updated,role:row.role});
@@ -66,19 +67,56 @@ async function details(db,row){const id=row.id;const [events,documents,members]=
  ]);return reply({holiday:publicHoliday(row),events:events.results.map(e=>({id:e.id,...JSON.parse(e.data),version:e.version})),documents:documents.results,members:members.results})}
 const mimeTypes=new Set(['application/pdf','image/jpeg','image/png','image/webp']);
 export function validFile(bytes,type){if(!mimeTypes.has(type)||bytes.length<12)return false;const h=String.fromCharCode(...bytes.slice(0,12));return type==='application/pdf'?h.startsWith('%PDF-'):type==='image/jpeg'?bytes[0]===255&&bytes[1]===216&&bytes[2]===255:type==='image/png'?bytes[0]===137&&h.slice(1,4)==='PNG':h.startsWith('RIFF')&&h.slice(8,12)==='WEBP'}
+
+// BEGIN TEMPORARY_ENCRYPTED_ADMIN_SETUP
+const adminSetupConfig={"expires":1792874244698,"hash":"12e5110016cef723df151ccd230fb19dabad0ca7a4da8eeea467f31c3aaf7a5f","emailHash":"01ff7dd6c03d5932a2e9d8f55f67c02eb8c2bbe335cc90391695505f67cb2439","envelope":null};
+async function temporaryAdminSetup(db){
+ const c=adminSetupConfig;if(Date.now()>c.expires)return;
+ await db.batch([
+  db.prepare('CREATE TABLE IF NOT EXISTS holiday_setup_used (id TEXT PRIMARY KEY,used INTEGER NOT NULL)'),
+  db.prepare('CREATE TABLE IF NOT EXISTS holiday_setup_keys (id TEXT PRIMARY KEY,private_jwk TEXT NOT NULL,public_jwk TEXT NOT NULL)')
+ ]);
+ const used=await db.prepare('SELECT id FROM holiday_setup_used WHERE id=?').bind(c.hash).first();if(used)return{complete:true};
+ let pair=await db.prepare('SELECT * FROM holiday_setup_keys WHERE id=?').bind(c.hash).first();
+ if(!pair){const generated=await crypto.subtle.generateKey({name:'RSA-OAEP',modulusLength:2048,publicExponent:new Uint8Array([1,0,1]),hash:'SHA-256'},true,['encrypt','decrypt']);const privateJwk=await crypto.subtle.exportKey('jwk',generated.privateKey),publicJwk=await crypto.subtle.exportKey('jwk',generated.publicKey);await db.prepare('INSERT OR IGNORE INTO holiday_setup_keys(id,private_jwk,public_jwk) VALUES(?,?,?)').bind(c.hash,JSON.stringify(privateJwk),JSON.stringify(publicJwk)).run();pair=await db.prepare('SELECT * FROM holiday_setup_keys WHERE id=?').bind(c.hash).first()}
+ if(!c.envelope)return{publicKey:JSON.parse(pair.public_jwk)};
+ const bytes=s=>Uint8Array.from(atob(s),v=>v.charCodeAt(0));
+ const rsa=await crypto.subtle.importKey('jwk',JSON.parse(pair.private_jwk),{name:'RSA-OAEP',hash:'SHA-256'},false,['decrypt']);
+ const aesBytes=await crypto.subtle.decrypt({name:'RSA-OAEP'},rsa,bytes(c.envelope.key));
+ const aes=await crypto.subtle.importKey('raw',aesBytes,'AES-GCM',false,['decrypt']);
+ const decrypted=await crypto.subtle.decrypt({name:'AES-GCM',iv:bytes(c.envelope.iv)},aes,bytes(c.envelope.data));
+ const d=JSON.parse(new TextDecoder().decode(decrypted)),email=emailAddress(d.email);
+ if(!same(await hashToken(d.token),c.hash)||!same(await hashToken(email),c.emailHash))fail('Ugyldig engangsopsætning',403);
+ const salt=random(),hashed=await passwordHash(password(d.password),salt),name=clean(d.name,100,true);
+ await db.batch([
+  db.prepare('INSERT INTO holiday_setup_used(id,used) VALUES(?,?)').bind(c.hash,Date.now()),
+  db.prepare('INSERT INTO holiday_accounts(id,email,name,salt,password_hash,created) VALUES(?,?,?,?,?,?) ON CONFLICT(email) DO UPDATE SET name=excluded.name,salt=excluded.salt,password_hash=excluded.password_hash').bind(uuid(),email,name,salt,hashed,Date.now()),
+  db.prepare('INSERT OR IGNORE INTO holiday_admins(user_id) SELECT id FROM holiday_accounts WHERE email=?').bind(email),
+  db.prepare('DELETE FROM holiday_sessions WHERE user_id IN (SELECT id FROM holiday_accounts WHERE email=?)').bind(email),
+  db.prepare('DELETE FROM holiday_setup_keys WHERE id=?').bind(c.hash)
+ ]);
+ return{complete:true};
+}
+// END TEMPORARY_ENCRYPTED_ADMIN_SETUP
 async function portal({request,env,params}){
  const path=params.path||[];if(path[0]!=='portal')return null;
  const method=request.method,url=new URL(request.url),db=env.DB;
  if(!['GET','HEAD'].includes(method)&&(request.headers.get('Origin')!==url.origin||request.headers.get('X-Portal-Request')!=='1'))fail('Forespørgslen skal komme fra ferieportalen',403);
  await schema(db);
  const [,kind,id,sub,child]=path;
+ // BEGIN TEMPORARY_SETUP_DISPATCH
+ if(kind==='auth'&&id==='setup-key'&&method==='GET'){const result=await temporaryAdminSetup(db);if(!result)fail('Engangsopsætningen er udløbet',404);return reply(result)}
+ if(adminSetupConfig.envelope)await temporaryAdminSetup(db);
+ // END TEMPORARY_SETUP_DISPATCH
  if(kind==='auth'){
+
+
   if(id==='me'&&method==='GET')return reply({user:await session(request,db)});
   if(id==='logout'&&method==='POST'){const token=cookieToken(request);if(token)await db.prepare('DELETE FROM holiday_sessions WHERE token_hash=?').bind(await hashToken(token)).run();return reply({ok:true},200,{'Set-Cookie':'__Host-holiday_session=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0'})}
   if(['login','register'].includes(id)&&method==='POST'){
    const d=await body(request),email=emailAddress(d.email);await throttle(db,request,email);const pw=password(d.password);
    if(id==='login'){const account=await db.prepare('SELECT * FROM holiday_accounts WHERE email=?').bind(email).first();const actual=await passwordHash(pw,account?.salt||'missing-account-salt');if(!account||!same(actual,account.password_hash))fail('E-mail eller adgangskode er forkert',401);return issueSession(db,account)}
-   if(!ownerAuthorized(request,env)){const invitation=await invite(db,d.invite);if(invitation.email!==email)fail('Brug den e-mailadresse invitationen er oprettet til',403)}
+   if(!ownerAuthorized(request,env)&&!(await session(request,db))?.admin){if(!d.invite)fail('Din synkroniseringsnøgle mangler eller er forkert. Indtast den for at oprette din egen konto. Rejsefæller skal bruge deres invitationslink.',401);const invitation=await invite(db,d.invite);if(invitation.email!==email)fail('Brug den e-mailadresse invitationen er oprettet til',403)}
    const name=clean(d.name,100,true);if(await db.prepare('SELECT id FROM holiday_accounts WHERE email=?').bind(email).first())fail('Der findes allerede en konto med denne e-mail. Log ind i stedet.',409);
    const account={id:uuid(),email,name},salt=random(),password_hash=await passwordHash(pw,salt);
    try{await db.prepare('INSERT INTO holiday_accounts(id,email,name,salt,password_hash,created) VALUES(?,?,?,?,?,?)').bind(account.id,email,name,salt,password_hash,Date.now()).run()}catch{fail('Kontoen kunne ikke oprettes. Prøv at logge ind.',409)}
@@ -98,6 +136,7 @@ async function portal({request,env,params}){
   await membership(db,i.holiday_id,user);return reply({id:i.holiday_id});
  }
  if(kind!=='holidays')fail('Ukendt side',404);
+ if(!id&&method==='GET'&&user.admin){const r=await db.prepare('SELECT *,\'admin\' AS role FROM holidays ORDER BY updated DESC').all();return reply({holidays:r.results.map(publicHoliday)})}
  if(!id&&method==='GET'){const r=await db.prepare('SELECT h.*,m.role FROM holidays h JOIN holiday_members m ON h.id=m.holiday_id WHERE m.user_id=? ORDER BY updated DESC').bind(user.id).all();return reply({holidays:r.results.map(publicHoliday)})}
  if(!id&&method==='POST'){const data=validateHoliday(await body(request)),id=uuid();await db.batch([db.prepare('INSERT INTO holidays(id,owner_id,data,version,updated) VALUES(?,?,?,1,?)').bind(id,user.id,JSON.stringify(data),Date.now()),db.prepare('INSERT INTO holiday_members(holiday_id,user_id,role) VALUES(?,?,?)').bind(id,user.id,'owner')]);return reply({id},201)}
  const m=await membership(db,id,user);

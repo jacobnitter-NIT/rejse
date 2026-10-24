@@ -1,4 +1,4 @@
-const C='rb-v5-holiday-portal',A=['./','index.html','icon.svg','manifest.webmanifest','trips.css','design.css','portal.css','portal.js','trip-engine.js','trips.js','scanner.js'];
+const C='rb-v6-portal-admin',A=['./','index.html','icon.svg','manifest.webmanifest','trips.css','design.css','portal.css','portal.js','trip-engine.js','trips.js','scanner.js'];
 self.addEventListener('install',e=>e.waitUntil(caches.open(C).then(c=>c.addAll(A)).then(()=>self.skipWaiting())));
 self.addEventListener('activate',e=>e.waitUntil(caches.keys().then(k=>Promise.all(k.filter(x=>x.startsWith('rb-')&&x!==C).map(x=>caches.delete(x)))).then(()=>clients.claim())));
 self.addEventListener('fetch',e=>{
