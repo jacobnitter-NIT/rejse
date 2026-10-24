@@ -1,4 +1,3 @@
-import {repairPhuketIdentities} from './repair-phuket-identities.mjs';
 import {normalizeTravellers,sortBookings} from './portal-plan.mjs';
 import {previewItinerary,itineraryFingerprint} from './itinerary-ai.js';
 import {ownerAuthorized} from './server-features.js';
@@ -82,8 +81,6 @@ async function portal({request,env,params}){
  if(!['GET','HEAD'].includes(method)&&(request.headers.get('Origin')!==url.origin||request.headers.get('X-Portal-Request')!=='1'))fail('Forespørgslen skal komme fra ferieportalen',403);
  await schema(db);
  const [,kind,id,sub,child]=path;
- // Temporary, single-purpose owner-authorized correction. No private contents are returned.
- if(kind?.startsWith('identity-repair-')){if(Date.now()>1792888068719||await hashToken(kind.slice(16))!=='7af618ea1afda15cd8daf4f58f4a1b2e47a09de3e8e0ec302d437c01695acdb0')fail('Ikke fundet',404);return reply(await repairPhuketIdentities(db,env))}
 
 
 
