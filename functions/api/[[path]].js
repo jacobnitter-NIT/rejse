@@ -1,8 +1,9 @@
+import {handlePortal} from '../../portal-server.js';
 import {handleFeature, ownerAuthorized} from '../../server-features.js';
 // Cloudflare Pages Function: stores receipt details in D1 and files in R2.
 // Needs bindings DB (D1), BUCKET (R2) and the secret SYNC_KEY.
 export async function onRequest(ctx) {
-  try { const feature = await handleFeature(ctx); return feature || await handle(ctx); }
+  try { const portal = await handlePortal(ctx); if(portal) return portal; const feature = await handleFeature(ctx); return feature || await handle(ctx); }
   catch (e) { return new Response('Server error: ' + e.message, { status: 500 }); }
 }
 

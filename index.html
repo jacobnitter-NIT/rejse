@@ -9,6 +9,7 @@
 <script src="trip-engine.js" defer></script>
 <script src="scanner.js" defer></script>
 <script src="trips.js" defer></script>
+<script src="portal.js" defer></script>
 <meta name="theme-color" content="#102d35"><link rel="manifest" href="manifest.webmanifest"><link rel="icon" href="icon.svg"><link rel="apple-touch-icon" href="icon.svg">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
 <style>
@@ -65,12 +66,13 @@ dialog label{display:block;font-size:13px;color:var(--mute);margin:10px 0 4px}
 .more{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 12px}.more .btn{padding:8px 12px;font-size:14px}.bar2{height:10px;background:var(--hi);border-radius:2px;min-width:2px}.cr{display:grid;grid-template-columns:90px 1fr auto;gap:8px;align-items:center;margin:6px 0;font-size:14px}h3{margin:14px 0 4px}
 </style>
 <link rel="stylesheet" href="design.css">
+<link rel="stylesheet" href="portal.css">
 </head>
 <body>
 <aside class="sidebar">
 <div class="brand"><span class="brand-mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h12v18l-3-2-3 2-3-2-3 2z"/><path d="M9 7h6M9 11h6M9 15h3"/></svg></span>Receipt Box<span class="brand-dot">.</span></div>
 <span class="nav-caption">DIT OVERBLIK</span>
-<nav class="tabs" aria-label="Hovedmenu"><button class="btn ghost active" id="tabReceipts" aria-pressed="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h12v18l-3-2-3 2-3-2-3 2z"/><path d="M9 7h6M9 11h6M9 15h3"/></svg><span>Kvitteringer</span></button><button class="btn ghost" id="tabTrips" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="7" width="18" height="14" rx="3"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M8 7v14M16 7v14"/></svg><span>Private rejser</span></button></nav>
+<nav class="tabs" aria-label="Hovedmenu"><button class="btn ghost active" id="tabReceipts" aria-pressed="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h12v18l-3-2-3 2-3-2-3 2z"/><path d="M9 7h6M9 11h6M9 15h3"/></svg><span>Kvitteringer</span></button><button class="btn ghost" id="tabTrips" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="7" width="18" height="14" rx="3"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M8 7v14M16 7v14"/></svg><span>Udlæg &amp; splits</span></button><button class="btn ghost" id="tabPortal" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3 11 18-8-8 18-2-8zM11 13l5-5"/></svg><span>Ferieportal</span></button></nav>
 <div class="sidebar-tip"><span class="eyebrow">MINDRE PAPIR. MERE OVERBLIK.</span><strong>Fra kvittering til afregning</strong><p>Scan dine kvitteringer og hold styr på udlæg med dine rejsefæller.</p></div>
 <div class="sidebar-footer">Kvitteringer &amp; rejseøkonomi</div>
 </aside>
@@ -112,6 +114,7 @@ dialog label{display:block;font-size:13px;color:var(--mute);margin:10px 0 4px}
 </div>
 </section>
 <section id="tripsView" hidden><div class="trip-actions"><button class="btn" id="newTrip">+ Ny rejse</button><button class="btn ghost" id="joinTrip">Åbn privat rejselink</button></div><div id="tripsContent"></div></section>
+<section id="portalView" hidden aria-label="Privat ferieportal"></section>
 </main>
 </div>
 
