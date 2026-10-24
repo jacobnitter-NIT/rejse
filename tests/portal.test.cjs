@@ -107,3 +107,29 @@ test('AI itinerary sanitization never invents missing dates, rejects bad JSON an
  const {normalizeItinerary,previewItinerary}=await import('../itinerary-ai.js');const d=normalizeItinerary({bookingReference:'ABC123',flights:[{...extracted.flights[0],departure:'2027-02-30T23:35',arrival:null,pnr:'OTHER1',departureTimezone:'not-a-zone',role:'admin'}]});assert.equal(d.flights[0].start,'');assert.equal(d.flights[0].end,'');assert.equal(d.flights[0].startZone,'');assert.equal(d.flights[0].reference,'OTHER1');assert.equal(d.flights[0].role,undefined);assert.ok(d.flights[0].warnings.length>=2);
  const env=environment();mockBookingAI(env);env.AI.run=async()=>({response:'not JSON'});await assert.rejects(()=>previewItinerary(env,new Blob(['%PDF-1.7'],{type:'application/pdf'})),/ufuldstændigt/);
 });
+
+const hotelAndTours={bookingReference:'ABC123',flights:[],hotels:[{name:'River Hotel',city:'Bangkok',address:'12 River Road',reference:'HOTEL-7788',checkIn:'2027-02-03',checkOut:'2027-02-07',roomType:'Double room',notes:'Breakfast included',status:'confirmed'}],tours:[{title:'Temples and canals',provider:'Local Tours',location:'Bangkok',reference:'TOUR-9911',start:'2027-02-05T09:00',end:'2027-02-05T14:00',meetingPoint:'Pier 3, River Road',pickup:'08:15 in the hotel lobby',notes:'Bring the voucher',status:'confirmed'}],warnings:[]};
+test('hotel and tour proposals preserve separate references, pickup details and unknown hotel times',async()=>{
+ const {normalizeItinerary}=await import('../itinerary-ai.js');const result=normalizeItinerary(hotelAndTours);assert.equal(result.events.length,2);assert.equal(result.flights.length,0);
+ const hotel=result.events.find(e=>e.type==='hotel'),tour=result.events.find(e=>e.type==='activity');assert.equal(hotel.reference,'HOTEL-7788');assert.equal(hotel.start,'2027-02-03T00:00');assert.equal(hotel.end,'2027-02-07T00:00');assert.equal(hotel.startDateOnly,true);assert.equal(hotel.endDateOnly,true);assert.match(hotel.notes,/Double room/);assert.ok(hotel.warnings.some(w=>w.includes('tid er ikke angivet')));
+ assert.equal(tour.reference,'TOUR-9911');assert.equal(tour.start,'2027-02-05T09:00');assert.equal(tour.startDateOnly,false);assert.equal(tour.address,'Pier 3, River Road');assert.match(tour.notes,/08:15/);assert.ok(!tour.reference.includes('ABC123'));
+ const undated=normalizeItinerary({tours:[{title:'Trip with date not set',reference:'V1'}]});assert.equal(undated.events[0].start,'');assert.ok(undated.events[0].warnings.length);
+});
+test('mixed booking confirmation saves hotels and tours with source associations, deduplication and date precision',async()=>{
+ const env=environment(),owner=await register(env),id=await holiday(env,owner),doc=await bookingDoc(env,owner,id);mockBookingAI(env,hotelAndTours);
+ const preview=await expect(await call(env,`holidays/${id}/import-preview`,'POST',{documentId:doc},owner),200);assert.equal(preview.events.length,2);assert.equal(preview.events[0].duplicate,false);
+ const payload={documentId:doc,events:preview.events};const imported=await expect(await call(env,`holidays/${id}/import-events`,'POST',payload,owner),200);assert.deepEqual(imported,{added:2,skipped:0});
+ let detail=await expect(await call(env,'holidays/'+id,'GET',null,owner),200);assert.equal(detail.events.length,2);assert.equal(detail.documents[0].event_ids.length,2);assert.equal(detail.documents[0].category,'other');const hotel=detail.events.find(e=>e.type==='hotel');assert.equal(hotel.startDateOnly,true);assert.equal(hotel.endDateOnly,true);
+ await expect(await call(env,`holidays/${id}/events/${hotel.id}`,'PUT',{...hotel,notes:'Manually changed hotel notes'},owner,{'If-Match':'1'}),200);
+ const again=await expect(await call(env,`holidays/${id}/import-events`,'POST',payload,owner),200);assert.deepEqual(again,{added:0,skipped:2});detail=await expect(await call(env,'holidays/'+id,'GET',null,owner),200);assert.equal(detail.events.find(e=>e.id===hotel.id).startDateOnly,true);assert.equal(detail.events.find(e=>e.id===hotel.id).notes,'Manually changed hotel notes');
+ const repeat=await expect(await call(env,`holidays/${id}/import-preview`,'POST',{documentId:doc},owner),200);assert.ok(repeat.events.every(e=>e.duplicate));
+});
+test('type-specific import validation rejects incomplete hotels and date-less tours, and enforces permissions',async()=>{
+ const {normalizeItinerary}=await import('../itinerary-ai.js'),env=environment(),owner=await register(env),id=await holiday(env,owner),doc=await bookingDoc(env,owner,id),{cookie:viewer}=await invited(env,owner,id);const items=normalizeItinerary(hotelAndTours).events;
+ assert.equal((await call(env,`holidays/${id}/import-events`,'POST',{documentId:doc,events:items},viewer)).status,403);
+ assert.equal((await call(env,`holidays/${id}/import-events`,'POST',{documentId:doc,events:[{...items[0],end:''}]},owner)).status,400);
+ assert.equal((await call(env,`holidays/${id}/import-events`,'POST',{documentId:doc,events:[{...items[0],end:'2027-02-01T00:00'}]},owner)).status,400);
+ assert.equal((await call(env,`holidays/${id}/import-events`,'POST',{documentId:doc,events:[{...items[1],start:''}]},owner)).status,400);
+ await expect(await call(env,`holidays/${id}/import-events`,'POST',{documentId:doc,events:[items[0]]},owner),200);let detail=await expect(await call(env,'holidays/'+id,'GET',null,owner),200);assert.equal(detail.documents[0].category,'hotel');
+ const tourDoc=await bookingDoc(env,owner,id);await expect(await call(env,`holidays/${id}/import-events`,'POST',{documentId:tourDoc,events:[{...items[1],start:'2027-02-05T00:00',startDateOnly:true,end:'',endDateOnly:false}]},owner),200);detail=await expect(await call(env,'holidays/'+id,'GET',null,owner),200);assert.equal(detail.documents.find(d=>d.id===tourDoc).category,'tour');assert.equal(detail.events.find(e=>e.type==='activity').startDateOnly,true);
+});
