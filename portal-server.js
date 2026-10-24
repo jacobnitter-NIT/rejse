@@ -1,4 +1,3 @@
-import {repairPhuketYear} from './repair-phuket-year.mjs';
 import {normalizeTravellers,sortBookings} from './portal-plan.mjs';
 import {previewItinerary,itineraryFingerprint} from './itinerary-ai.js';
 import {ownerAuthorized} from './server-features.js';
@@ -82,9 +81,6 @@ async function portal({request,env,params}){
  if(!['GET','HEAD'].includes(method)&&(request.headers.get('Origin')!==url.origin||request.headers.get('X-Portal-Request')!=='1'))fail('Forespørgslen skal komme fra ferieportalen',403);
  await schema(db);
  const [,kind,id,sub,child]=path;
- // Temporary owner-requested repair; no account or holiday details are public.
- const repairStatus=await repairPhuketYear(db);
- if(kind==='year-repair-status'&&method==='GET')return reply({state:repairStatus.state,verified:repairStatus.state==='complete'});
 
  if(kind==='auth'){
 
