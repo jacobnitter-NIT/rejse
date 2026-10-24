@@ -18,11 +18,11 @@ jobs:
               try:
                   with urllib.request.urlopen('https://rejse-9wn.pages.dev/api/portal/auth/setup-key', timeout=15) as response:
                       result = json.load(response)
-                  if result.get('publicKey') or result.get('complete'):
+                  if result.get('complete'):
                       print('PORTAL_SETUP_RESULT=' + json.dumps(result, separators=(',', ':')))
                       break
-              except Exception:
-                  pass
+              except Exception as error:
+                  print('Waiting for deployment:', type(error).__name__, getattr(error, 'code', ''), flush=True)
               time.sleep(10)
           else:
               raise SystemExit('Deployed setup endpoint was not ready')
