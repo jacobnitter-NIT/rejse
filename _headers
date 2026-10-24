@@ -1,0 +1,12 @@
+/
+  Cache-Control: no-cache
+/index.html
+  Cache-Control: no-cache
+/sw.js
+  Cache-Control: no-cache
+/portal.js
+  Cache-Control: no-cache
+/portal-plan.mjs
+  Cache-Control: no-cache
+/portal.css
+  Cache-Control: no-cache

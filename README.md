@@ -65,7 +65,7 @@ Integration tests use synthetic booking text and mocked model/conversion respons
 
 ## Linked chronological itinerary and traveller names
 
-Saved bookings are now rendered as chronological **rejsepunkter**: flight departures/arrivals, hotel check-in/check-out, tour starts/ends and transport endpoints. Selecting a day during a hotel stay shows an ongoing-stay point. Existing saved bookings participate without migration. Dates outside the holiday's configured period are also included in the date selector and flagged rather than hidden. Sorting uses dates and local wall times; a same-day westbound flight's arrival is kept after its departure when its wall time is earlier. Unknown times remain date-only rather than assumed times; this is not a UTC timeline across unknown time zones.
+Saved bookings are now rendered as chronological **rejsepunkter**: flight departures/arrivals, hotel check-in/check-out, tour starts/ends and transport endpoints. Selecting a day during a hotel stay shows an ongoing-stay point. Existing saved bookings participate without migration. Dates outside the holiday's configured period are also included in the date selector and flagged rather than hidden. Sorting follows the dates and local wall times displayed in the overview, including westbound flights; no separate departure-before-arrival override is applied. Unknown times remain date-only rather than assumed times; this is not a UTC timeline across unknown time zones.
 
 Import confirmation returns the newly saved holiday snapshot, including sorted bookings and document links. The client renders that snapshot directly in Rejseplan and clears previous filters. A completed import no longer triggers overlapping close-dialog refreshes that can replace the displayed result with an earlier response. Loading another holiday also resets plan filters and ignores superseded loads.
 
@@ -74,3 +74,12 @@ Document cards distinguish saved files from files actually linked to the plan. L
 Each booking has a `travellers` name list. Names can be typed during import, applied to several selected proposals, or edited on an existing booking. The parser can suggest names explicitly printed for that particular reservation. Copies of the same reservation merge those names; different PNRs/booking references and different flights remain separate. Names do not create accounts, invite anyone or change access. They are displayed on points and are searchable/filterable in the plan. Selecting a person includes shared bookings with no assigned names.
 
 `portal-plan.mjs` contains shared, pure sorting, milestone, document-link and traveller-normalization helpers, imported by the browser and server. Names are limited to 60 distinct names per booking, 100 characters each, and whitelisted in event validation. Legacy events without names are treated as shared/unassigned. Test coverage includes unsorted imports, arrivals on subsequent days, ongoing hotel stays, document/person filters, same-day westbound legs, snapshots returned at save, distinct passenger PNRs and name edits.
+
+
+## Chronological overview correction
+
+The primary itinerary view now starts with a compact chronological table showing each point's own date, local time, label, booking, traveller names and reference. Full booking cards are available below in an expandable details section. Dates and times are compared consistently; no special rule moves an earlier displayed wall time after a later one. Unknown times remain marked as date-only.
+
+The holiday-card overview is sorted by holiday start date. Imported proposals are sorted by booking start date before review. Documents are sorted by the earliest start date of their linked bookings and show that travel date; unlinked documents without a known travel date appear last, without inferring dates from upload time or filenames.
+
+Portal module URLs carry a new revision, the service-worker cache is refreshed, and no-cache headers prevent stale HTML, portal scripts and sorting helpers from continuing to hide an update. Tests cover all overview sorters, out-of-order uploads, month/year boundaries and globally monotonic displayed timeline times.
