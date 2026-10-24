@@ -92,7 +92,7 @@ test('reviewed flights import atomically, link the PDF to all legs, and do not d
  const saved=await expect(await call(env,`holidays/${id}/import-flights`,'POST',payload,owner),200);assert.equal(saved.added,2);
  let detail=await expect(await call(env,'holidays/'+id,'GET',null,owner),200);assert.equal(detail.events.length,2);assert.equal(detail.documents[0].event_ids.length,2);assert.ok(detail.events.some(e=>e.reference==='COR123'));assert.equal(detail.events[0].warnings,undefined);
  const first=detail.events[0];await expect(await call(env,`holidays/${id}/events/${first.id}`,'PUT',{...first,notes:'Manually reviewed note'},owner,{'If-Match':'1'}),200);
- const again=await expect(await call(env,`holidays/${id}/import-flights`,'POST',payload,owner),200);assert.deepEqual(again,{added:0,skipped:2});detail=await expect(await call(env,'holidays/'+id,'GET',null,owner),200);assert.equal(detail.events.length,2);assert.equal(detail.events.find(e=>e.id===first.id).notes,'Manually reviewed note');
+ const again=await expect(await call(env,`holidays/${id}/import-flights`,'POST',payload,owner),200);assert.deepEqual({added:again.added,skipped:again.skipped},{added:0,skipped:2});detail=await expect(await call(env,'holidays/'+id,'GET',null,owner),200);assert.equal(detail.events.length,2);assert.equal(detail.events.find(e=>e.id===first.id).notes,'Manually reviewed note');
  assert.equal((await call(env,`holidays/${id}/events/${first.id}`,'DELETE',null,owner,{'If-Match':'1'})).status,409);assert.equal((await expect(await call(env,'holidays/'+id,'GET',null,owner),200)).documents[0].event_ids.length,2);
  await expect(await call(env,`holidays/${id}/events/${first.id}`,'DELETE',null,owner,{'If-Match':'2'}),200);assert.equal((await expect(await call(env,'holidays/'+id,'GET',null,owner),200)).documents[0].event_ids.length,1);
 });
@@ -118,10 +118,10 @@ test('hotel and tour proposals preserve separate references, pickup details and 
 test('mixed booking confirmation saves hotels and tours with source associations, deduplication and date precision',async()=>{
  const env=environment(),owner=await register(env),id=await holiday(env,owner),doc=await bookingDoc(env,owner,id);mockBookingAI(env,hotelAndTours);
  const preview=await expect(await call(env,`holidays/${id}/import-preview`,'POST',{documentId:doc},owner),200);assert.equal(preview.events.length,2);assert.equal(preview.events[0].duplicate,false);
- const payload={documentId:doc,events:preview.events};const imported=await expect(await call(env,`holidays/${id}/import-events`,'POST',payload,owner),200);assert.deepEqual(imported,{added:2,skipped:0});
+ const payload={documentId:doc,events:preview.events};const imported=await expect(await call(env,`holidays/${id}/import-events`,'POST',payload,owner),200);assert.deepEqual({added:imported.added,skipped:imported.skipped},{added:2,skipped:0});
  let detail=await expect(await call(env,'holidays/'+id,'GET',null,owner),200);assert.equal(detail.events.length,2);assert.equal(detail.documents[0].event_ids.length,2);assert.equal(detail.documents[0].category,'other');const hotel=detail.events.find(e=>e.type==='hotel');assert.equal(hotel.startDateOnly,true);assert.equal(hotel.endDateOnly,true);
  await expect(await call(env,`holidays/${id}/events/${hotel.id}`,'PUT',{...hotel,notes:'Manually changed hotel notes'},owner,{'If-Match':'1'}),200);
- const again=await expect(await call(env,`holidays/${id}/import-events`,'POST',payload,owner),200);assert.deepEqual(again,{added:0,skipped:2});detail=await expect(await call(env,'holidays/'+id,'GET',null,owner),200);assert.equal(detail.events.find(e=>e.id===hotel.id).startDateOnly,true);assert.equal(detail.events.find(e=>e.id===hotel.id).notes,'Manually changed hotel notes');
+ const again=await expect(await call(env,`holidays/${id}/import-events`,'POST',payload,owner),200);assert.deepEqual({added:again.added,skipped:again.skipped},{added:0,skipped:2});detail=await expect(await call(env,'holidays/'+id,'GET',null,owner),200);assert.equal(detail.events.find(e=>e.id===hotel.id).startDateOnly,true);assert.equal(detail.events.find(e=>e.id===hotel.id).notes,'Manually changed hotel notes');
  const repeat=await expect(await call(env,`holidays/${id}/import-preview`,'POST',{documentId:doc},owner),200);assert.ok(repeat.events.every(e=>e.duplicate));
 });
 test('type-specific import validation rejects incomplete hotels and date-less tours, and enforces permissions',async()=>{
@@ -132,4 +132,15 @@ test('type-specific import validation rejects incomplete hotels and date-less to
  assert.equal((await call(env,`holidays/${id}/import-events`,'POST',{documentId:doc,events:[{...items[1],start:''}]},owner)).status,400);
  await expect(await call(env,`holidays/${id}/import-events`,'POST',{documentId:doc,events:[items[0]]},owner),200);let detail=await expect(await call(env,'holidays/'+id,'GET',null,owner),200);assert.equal(detail.documents[0].category,'hotel');
  const tourDoc=await bookingDoc(env,owner,id);await expect(await call(env,`holidays/${id}/import-events`,'POST',{documentId:tourDoc,events:[{...items[1],start:'2027-02-05T00:00',startDateOnly:true,end:'',endDateOnly:false}]},owner),200);detail=await expect(await call(env,'holidays/'+id,'GET',null,owner),200);assert.equal(detail.documents.find(d=>d.id===tourDoc).category,'tour');assert.equal(detail.events.find(e=>e.type==='activity').startDateOnly,true);
+});
+
+test('confirmed imports return the saved chronological plan immediately, with editable names and separate PNRs',async()=>{
+ const {buildTimeline}=await import('../portal-plan.mjs'),env=environment(),owner=await register(env),id=await holiday(env,owner),doc=await bookingDoc(env,owner,id);
+ const flights=[{...flight,reference:'JAC123',start:'2027-02-02T15:00',end:'2027-02-03T06:00',travellers:['Jacob']},{...flight,reference:'LON456',start:'2027-02-01T15:00',end:'2027-02-02T06:00',travellers:'Lone'}];
+ const result=await expect(await call(env,`holidays/${id}/import-events`,'POST',{documentId:doc,events:flights},owner),200);assert.equal(result.holiday.id,id);assert.equal(result.events.length,2);assert.equal(result.events[0].reference,'LON456');assert.deepEqual(result.events[0].travellers,['Lone']);assert.deepEqual(result.events[1].travellers,['Jacob']);assert.equal(result.documents[0].event_ids.length,2);assert.equal(buildTimeline(result.events).length,4);
+ const first=result.events[0];await expect(await call(env,`holidays/${id}/events/${first.id}`,'PUT',{...first,travellers:'Lone\nJosephina'},owner,{'If-Match':String(first.version)}),200);const saved=await expect(await call(env,'holidays/'+id,'GET',null,owner),200);assert.deepEqual(saved.events.find(e=>e.id===first.id).travellers,['Lone','Josephina']);
+ assert.equal((await call(env,`holidays/${id}/events/${first.id}`,'PUT',{...first,travellers:[{role:'admin'}]},owner,{'If-Match':'2'})).status,400);
+});
+test('AI passenger copies merge names only for matching bookings, while different references stay separate',async()=>{
+ const {normalizeItinerary}=await import('../itinerary-ai.js');const original=extracted.flights[0],result=normalizeItinerary({flights:[{...original,travellers:['Jacob']},{...original,travellers:['Lone']},{...original,pnr:'OTHER9',travellers:['Carsten']}],hotels:[],tours:[]});assert.equal(result.events.length,2);assert.deepEqual(result.events[0].travellers,['Jacob','Lone']);assert.deepEqual(result.events[1].travellers,['Carsten']);assert.equal(result.events[1].reference,'OTHER9');
 });

@@ -1,3 +1,4 @@
+import {normalizeTravellers,sortBookings} from './portal-plan.mjs';
 import {previewItinerary,itineraryFingerprint} from './itinerary-ai.js';
 import {ownerAuthorized} from './server-features.js';
 
@@ -24,7 +25,8 @@ export function validateEvent(d){
  // Local times across time zones are deliberately not compared as UTC instants.
  if(type==='hotel'&&end&&((startDateOnly||endDateOnly)?end.slice(0,10)<start.slice(0,10):end<start))fail('Check-ud skal være efter check-ind');
  const status=d.status||'planned';if(!['planned','confirmed','cancelled'].includes(status))fail('Ugyldig status');
- return{type,title:clean(d.title,200,true),start,end,startDateOnly,endDateOnly,startZone:zone(d.startZone),endZone:zone(d.endZone),from:clean(d.from,200),to:clean(d.to,200),provider:clean(d.provider,160),reference:clean(d.reference,120),flightNumber:clean(d.flightNumber,40),address:clean(d.address,400),notes:clean(d.notes,6000),status};
+ let travellers;try{travellers=normalizeTravellers(d.travellers)}catch(e){fail(e.message)}
+ return{type,title:clean(d.title,200,true),travellers,start,end,startDateOnly,endDateOnly,startZone:zone(d.startZone),endZone:zone(d.endZone),from:clean(d.from,200),to:clean(d.to,200),provider:clean(d.provider,160),reference:clean(d.reference,120),flightNumber:clean(d.flightNumber,40),address:clean(d.address,400),notes:clean(d.notes,6000),status};
 }
 async function readBytes(request,limit){const reader=request.body?.getReader();if(!reader)fail('Tom forespørgsel');const chunks=[];let size=0;for(;;){const {done,value}=await reader.read();if(done)break;size+=value.length;if(size>limit){await reader.cancel();fail('Filen eller forespørgslen er for stor',413)}chunks.push(value)}const bytes=new Uint8Array(size);let n=0;for(const c of chunks){bytes.set(c,n);n+=c.length}return bytes}
 async function body(request,limit=40000){try{const d=JSON.parse(new TextDecoder().decode(await readBytes(request,limit)));if(!d||typeof d!=='object'||Array.isArray(d))fail('Ugyldig forespørgsel');return d}catch(e){if(e.status)throw e;fail('Ugyldig forespørgsel')}}
@@ -62,12 +64,13 @@ const ownerRole=m=>{if(!['owner','admin'].includes(m.role))fail('Kun ferieejeren
 function version(request){const n=Number(request.headers.get('If-Match'));if(!Number.isSafeInteger(n)||n<1)fail('Hent den seneste version før du gemmer',409);return n}
 function changed(result){if(!result.meta?.changes)fail('Planen er ændret af en rejsefælle. Luk vinduet og hent den nyeste version. Dine indtastninger er ikke gemt.',409)}
 const publicHoliday=row=>({id:row.id,...JSON.parse(row.data),version:row.version,updated:row.updated,role:row.role});
-async function details(db,row){const id=row.id;const [events,documents,members,links]=await Promise.all([
+async function holidaySnapshot(db,row){const id=row.id;const [events,documents,members,links]=await Promise.all([
  db.prepare('SELECT id,data,version,updated FROM holiday_events WHERE holiday_id=? ORDER BY updated').bind(id).all(),
  db.prepare('SELECT id,name,type,size,category,event_id,created FROM holiday_documents WHERE holiday_id=? ORDER BY created DESC').bind(id).all(),
  db.prepare('SELECT a.id,a.name,a.email,m.role FROM holiday_members m JOIN holiday_accounts a ON a.id=m.user_id WHERE m.holiday_id=? ORDER BY a.name').bind(id).all(),
  db.prepare('SELECT event_id,document_id FROM holiday_event_documents WHERE holiday_id=?').bind(id).all()
- ]);return reply({holiday:publicHoliday(row),events:events.results.map(e=>({id:e.id,...JSON.parse(e.data),version:e.version})),documents:documents.results.map(d=>({...d,event_ids:links.results.filter(l=>l.document_id===d.id).map(l=>l.event_id)})),members:members.results})}
+ ]);return {holiday:publicHoliday(row),events:sortBookings(events.results.map(e=>({id:e.id,...JSON.parse(e.data),version:e.version}))),documents:documents.results.map(d=>({...d,event_ids:links.results.filter(l=>l.document_id===d.id).map(l=>l.event_id)})),members:members.results};}
+async function details(db,row){return reply(await holidaySnapshot(db,row))}
 const mimeTypes=new Set(['application/pdf','image/jpeg','image/png','image/webp']);
 export function validFile(bytes,type){if(!mimeTypes.has(type)||bytes.length<12)return false;const h=String.fromCharCode(...bytes.slice(0,12));return type==='application/pdf'?h.startsWith('%PDF-'):type==='image/jpeg'?bytes[0]===255&&bytes[1]===216&&bytes[2]===255:type==='image/png'?bytes[0]===137&&h.slice(1,4)==='PNG':h.startsWith('RIFF')&&h.slice(8,12)==='WEBP'}
 
@@ -141,7 +144,7 @@ async function portal({request,env,params}){
   statements.push(db.prepare('UPDATE holiday_documents SET category=? WHERE id=? AND holiday_id=?').bind(category,d.documentId,id));
   statements.push(db.prepare('UPDATE holidays SET updated=? WHERE id=?').bind(Date.now(),id));
   const results=await db.batch(statements);const added=results.filter((r,i)=>i<results.length-2&&i%2===0).reduce((n,r)=>n+(r.meta?.changes||0),0);
-  return reply({added,skipped:flights.length-added});
+  return reply({added,skipped:flights.length-added,...await holidaySnapshot(db,await membership(db,id,user))});
  }
  if(sub==='events'){
   editRole(m);
