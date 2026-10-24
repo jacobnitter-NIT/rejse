@@ -1,14 +1,15 @@
 import {readBookingIdentities,chooseIdentity,validPNR} from './booking-identities.mjs';
 import {normalizeTravellers} from './portal-plan.mjs';
 const flightCarrier=e=>String(e.flightNumber||'').trim().slice(0,2).toUpperCase();
-const job='phuket-booking-identities-20261024';
+const job='phuket-booking-identities-second-pass-20261024';
 export async function repairPhuketIdentities(db,env){
  await db.prepare('CREATE TABLE IF NOT EXISTS holiday_identity_repairs (job TEXT NOT NULL,document_id TEXT NOT NULL,state TEXT NOT NULL,backup_json TEXT NOT NULL,result_json TEXT NOT NULL,created INTEGER NOT NULL,PRIMARY KEY(job,document_id))').run();
  const yearRepair=await db.prepare('SELECT holiday_id FROM holiday_year_repairs WHERE id=?').bind('phuket-year-2027-20261024').first();if(!yearRepair)return{state:'target-not-found'};
  const holidayId=yearRepair.holiday_id;
  const docs=(await db.prepare('SELECT id,type FROM holiday_documents WHERE holiday_id=? ORDER BY created').bind(holidayId).all()).results.filter(d=>d.type==='application/pdf');
+ const missing=(await db.prepare('SELECT id,data FROM holiday_events WHERE holiday_id=?').bind(holidayId).all()).results.filter(r=>JSON.parse(r.data).type==='flight'&&!normalizeTravellers(JSON.parse(r.data).travellers).length).map(r=>r.id);
  const processed=(await db.prepare('SELECT document_id,state,result_json FROM holiday_identity_repairs WHERE job=?').bind(job).all()).results;
- const next=docs.find(d=>!processed.some(p=>p.document_id===d.id));
+ const relevant=(await db.prepare('SELECT document_id,event_id FROM holiday_event_documents WHERE holiday_id=?').bind(holidayId).all()).results.filter(r=>missing.includes(r.event_id)).map(r=>r.document_id);const next=docs.find(d=>relevant.includes(d.id)&&!processed.some(p=>p.document_id===d.id));
  if(!next){const totals=processed.reduce((a,p)=>{const r=JSON.parse(p.result_json);a.references+=r.references||0;a.names+=r.names||0;a.unresolved+=r.unresolved||0;a.failed+=p.state==='failed'?1:0;return a},{references:0,names:0,unresolved:0,failed:0});const current=(await db.prepare('SELECT data FROM holiday_events WHERE holiday_id=?').bind(holidayId).all()).results.map(r=>JSON.parse(r.data)).filter(e=>e.type==='flight');const verification={flights:current.length,missingPNR:current.filter(e=>!validPNR(e.reference)).length,missingNames:current.filter(e=>!normalizeTravellers(e.travellers).length).length,wrongYear:current.filter(e=>!e.start.startsWith('2027-')||e.end&&!e.end.startsWith('2027-')).length,carriers:[...new Set(current.map(e=>flightCarrier(e)))].map(carrier=>({carrier,flights:current.filter(e=>flightCarrier(e)===carrier).length,missingPNR:current.filter(e=>flightCarrier(e)===carrier&&!validPNR(e.reference)).length,missingNames:current.filter(e=>flightCarrier(e)===carrier&&!normalizeTravellers(e.travellers).length).length}))};return{state:verification.missingPNR||verification.missingNames||totals.failed?'needs-review':'complete',done:processed.length,total:docs.length,...totals,verification}}
  if(!env.AI?.run||!env.AI?.toMarkdown||!env.BUCKET)return{state:'bindings-unavailable'};
  let outcome={references:0,names:0,unresolved:0},backup=[];
