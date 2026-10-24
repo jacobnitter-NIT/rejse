@@ -24,7 +24,7 @@ Run `node --test tests/*.test.cjs`. Tests cover currency minor units, uneven all
 
 ## Ferieportal / account-based holidays
 
-The **Ferieportal** tab is separate from receipt storage and the existing **Udlæg & splits** ledger. Create a holiday such as Thailand 2027, add flights/PNRs, hotel reservations, transport, activities and practical notes, then use the date strip, route strip, search and timeline to review the itinerary. Times are entered and displayed as local wall times with explicit IANA time zone labels; they are not automatically converted. Hotel stays appear on the relevant days. Plans and booking references are manual entry; this release does not import emails or parse booking PDFs.
+The **Ferieportal** tab is separate from receipt storage and the existing **Udlæg & splits** ledger. Create a holiday such as Thailand 2027, add flights/PNRs, hotel reservations, transport, activities and practical notes, then use the date strip, route strip, search and timeline to review the itinerary. Times are entered and displayed as local wall times with explicit IANA time zone labels; they are not automatically converted. Hotel stays appear on the relevant days. Plans can be entered manually or imported from airline itinerary PDFs through the review flow below. Emails are not imported.
 
 The existing D1 **DB**, R2 **BUCKET** and **SYNC_KEY** bindings are reused. New, namespaced `holiday_*` tables and indexes are created idempotently on the first portal API request. No existing receipt or expense data is migrated, changed or shared. Preview deployments need their own configured bindings; production bindings do not automatically imply preview bindings.
 
@@ -39,3 +39,18 @@ The existing D1 **DB**, R2 **BUCKET** and **SYNC_KEY** bindings are reused. New,
 `node --test tests/*.test.cjs` uses Node 24's built-in SQLite for portal integration tests against the actual SQL statements. It checks registration/login/logout, password changes, origin checks, invitation binding/expiry/cancellation, cross-holiday isolation, role enforcement, immediate membership revocation, concurrency, private document downloads and authentication rate limits.
 
 Portal administrators are stored separately in `holiday_admins`. They can manage all holidays and their invitations/documents. Ordinary account access remains limited to explicit membership. Administrator status is shown beside the signed-in name. Invalid owner registration without an invitation now explicitly requests the correct Sync key instead of reporting an expired invitation.
+
+
+## Airline itinerary PDF import
+
+In a holiday's **Rejseplan** or **Dokumenter**, select **Importér rejseplan**. Upload an original airline PDF (for example SAS, up to 20 MB). The original is saved to that holiday's document archive before analysis. Existing PDFs have a **Læs fly & PNR** action. If analysis fails, the saved document remains available and can be retried.
+
+Workers AI's `AI.toMarkdown` extracts PDF text server-side, then a text model proposes individual flight segments with PNR, airline, flight number, airports and local departure/arrival dates and times. The default model is `@cf/meta/llama-3.3-70b-instruct-fp8-fast`; optional `ITINERARY_AI_MODEL` must support messages and JSON mode. This uses the existing **AI** binding and the account's model availability. The parser supports text PDFs; image-only scans or password-protected PDFs may need the original booking PDF instead. No browser PDF/OCR dependency is added.
+
+The preview does not create flights. A user with edit rights must select, review and confirm the proposals; from/to and complete departure/arrival dates and times are required for selected flights. Missing or invalid fields remain blank for correction. Times retain their local meaning, including next-day arrival dates, and unknown time zones are not inferred. PNRs may vary per segment. Evidence is displayed only when the excerpt is found in the converted source text. Suggestions are not guaranteed to be correct; the preview asks the user to check them against the PDF.
+
+Confirmation saves the selected flights in one D1 batch and links the source document to all corresponding events through `holiday_event_documents`. Stable IDs deduplicate repeated imported segments with the same flight number, local departure, route and PNR, including request retries, without overwriting later manual edits. Matching existing manual events are also retained. Different PNRs are treated as separate bookings. Deleting an event or a document clears its import associations.
+
+Access to analysis and confirmation is checked against the same holiday membership/administrator rules as other edits. An account can run at most 20 analyses per ten-minute window. Source documents are treated as untrusted data; the model receives no tools and cannot follow document instructions, and its output is whitelisted before confirmation. Up to 30 proposals are returned. Long document text is capped with a visible warning.
+
+Integration tests use synthetic SAS-style booking text and mocked model/conversion responses to cover multi-leg/overnight data, preserved PNRs, the review/save boundary, document associations, duplicate prevention, retained manual edits, authorization and failed extraction. Real provider extraction quality requires checking an actual airline PDF in the deployed app.

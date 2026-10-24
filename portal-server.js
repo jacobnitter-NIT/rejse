@@ -1,3 +1,4 @@
+import {previewItinerary,itineraryFingerprint} from './itinerary-ai.js';
 import {ownerAuthorized} from './server-features.js';
 
 const enc=new TextEncoder(), DAY=86400000, MAX_FILE=20*1024*1024;
@@ -26,7 +27,7 @@ export function validateEvent(d){
  return{type,title:clean(d.title,200,true),start,end,startZone:zone(d.startZone),endZone:zone(d.endZone),from:clean(d.from,200),to:clean(d.to,200),provider:clean(d.provider,160),reference:clean(d.reference,120),flightNumber:clean(d.flightNumber,40),address:clean(d.address,400),notes:clean(d.notes,6000),status};
 }
 async function readBytes(request,limit){const reader=request.body?.getReader();if(!reader)fail('Tom forespørgsel');const chunks=[];let size=0;for(;;){const {done,value}=await reader.read();if(done)break;size+=value.length;if(size>limit){await reader.cancel();fail('Filen eller forespørgslen er for stor',413)}chunks.push(value)}const bytes=new Uint8Array(size);let n=0;for(const c of chunks){bytes.set(c,n);n+=c.length}return bytes}
-async function body(request){try{const d=JSON.parse(new TextDecoder().decode(await readBytes(request,40000)));if(!d||typeof d!=='object'||Array.isArray(d))fail('Ugyldig forespørgsel');return d}catch(e){if(e.status)throw e;fail('Ugyldig forespørgsel')}}
+async function body(request,limit=40000){try{const d=JSON.parse(new TextDecoder().decode(await readBytes(request,limit)));if(!d||typeof d!=='object'||Array.isArray(d))fail('Ugyldig forespørgsel');return d}catch(e){if(e.status)throw e;fail('Ugyldig forespørgsel')}}
 const ready=new WeakMap();
 async function schema(db){
  if(!db)fail('Ferieportal kræver den eksisterende D1-binding DB',503);
@@ -39,6 +40,7 @@ async function schema(db){
   'CREATE TABLE IF NOT EXISTS holiday_invites (token_hash TEXT PRIMARY KEY,holiday_id TEXT NOT NULL,email TEXT NOT NULL,role TEXT NOT NULL,expires INTEGER NOT NULL)',
   'CREATE TABLE IF NOT EXISTS holiday_events (id TEXT PRIMARY KEY,holiday_id TEXT NOT NULL,data TEXT NOT NULL,version INTEGER NOT NULL DEFAULT 1,updated INTEGER NOT NULL)',
   'CREATE TABLE IF NOT EXISTS holiday_documents (id TEXT PRIMARY KEY,holiday_id TEXT NOT NULL,name TEXT NOT NULL,type TEXT NOT NULL,size INTEGER NOT NULL,category TEXT NOT NULL,event_id TEXT NOT NULL DEFAULT \'\',uploader_id TEXT NOT NULL,created INTEGER NOT NULL)',
+  'CREATE TABLE IF NOT EXISTS holiday_event_documents (holiday_id TEXT NOT NULL,event_id TEXT NOT NULL,document_id TEXT NOT NULL,PRIMARY KEY(holiday_id,event_id,document_id))',
   'CREATE TABLE IF NOT EXISTS holiday_auth_limits (key TEXT PRIMARY KEY,attempts INTEGER NOT NULL,window INTEGER NOT NULL)',
   'CREATE INDEX IF NOT EXISTS holiday_session_user ON holiday_sessions(user_id)',
   'CREATE INDEX IF NOT EXISTS holiday_event_parent ON holiday_events(holiday_id)',
@@ -60,11 +62,12 @@ const ownerRole=m=>{if(!['owner','admin'].includes(m.role))fail('Kun ferieejeren
 function version(request){const n=Number(request.headers.get('If-Match'));if(!Number.isSafeInteger(n)||n<1)fail('Hent den seneste version før du gemmer',409);return n}
 function changed(result){if(!result.meta?.changes)fail('Planen er ændret af en rejsefælle. Luk vinduet og hent den nyeste version. Dine indtastninger er ikke gemt.',409)}
 const publicHoliday=row=>({id:row.id,...JSON.parse(row.data),version:row.version,updated:row.updated,role:row.role});
-async function details(db,row){const id=row.id;const [events,documents,members]=await Promise.all([
+async function details(db,row){const id=row.id;const [events,documents,members,links]=await Promise.all([
  db.prepare('SELECT id,data,version,updated FROM holiday_events WHERE holiday_id=? ORDER BY updated').bind(id).all(),
  db.prepare('SELECT id,name,type,size,category,event_id,created FROM holiday_documents WHERE holiday_id=? ORDER BY created DESC').bind(id).all(),
- db.prepare('SELECT a.id,a.name,a.email,m.role FROM holiday_members m JOIN holiday_accounts a ON a.id=m.user_id WHERE m.holiday_id=? ORDER BY a.name').bind(id).all()
- ]);return reply({holiday:publicHoliday(row),events:events.results.map(e=>({id:e.id,...JSON.parse(e.data),version:e.version})),documents:documents.results,members:members.results})}
+ db.prepare('SELECT a.id,a.name,a.email,m.role FROM holiday_members m JOIN holiday_accounts a ON a.id=m.user_id WHERE m.holiday_id=? ORDER BY a.name').bind(id).all(),
+ db.prepare('SELECT event_id,document_id FROM holiday_event_documents WHERE holiday_id=?').bind(id).all()
+ ]);return reply({holiday:publicHoliday(row),events:events.results.map(e=>({id:e.id,...JSON.parse(e.data),version:e.version})),documents:documents.results.map(d=>({...d,event_ids:links.results.filter(l=>l.document_id===d.id).map(l=>l.event_id)})),members:members.results})}
 const mimeTypes=new Set(['application/pdf','image/jpeg','image/png','image/webp']);
 export function validFile(bytes,type){if(!mimeTypes.has(type)||bytes.length<12)return false;const h=String.fromCharCode(...bytes.slice(0,12));return type==='application/pdf'?h.startsWith('%PDF-'):type==='image/jpeg'?bytes[0]===255&&bytes[1]===216&&bytes[2]===255:type==='image/png'?bytes[0]===137&&h.slice(1,4)==='PNG':h.startsWith('RIFF')&&h.slice(8,12)==='WEBP'}
 
@@ -110,13 +113,41 @@ async function portal({request,env,params}){
  const m=await membership(db,id,user);
  if(!sub&&method==='GET')return details(db,m);
  if(!sub&&method==='PUT'){editRole(m);const data=validateHoliday(await body(request));changed(await db.prepare('UPDATE holidays SET data=?,version=version+1,updated=? WHERE id=? AND version=?').bind(JSON.stringify(data),Date.now(),id,version(request)).run());return details(db,await membership(db,id,user))}
+ if(sub==='import-preview'&&method==='POST'){
+  editRole(m);const d=await body(request);if(!validId(d.documentId))fail('Vælg en gemt PDF');
+  const doc=await db.prepare('SELECT * FROM holiday_documents WHERE id=? AND holiday_id=?').bind(d.documentId,id).first();if(!doc)fail('Dokumentet findes ikke i denne ferie',404);if(doc.type!=='application/pdf')fail('Automatisk rejseimport understøtter PDF-filer');if(!env.BUCKET)fail('Dokumentlageret er ikke tilgængeligt',503);
+  const window=Math.floor(Date.now()/600000),key=await hashToken('itinerary-import:'+user.id);
+  await db.prepare('INSERT INTO holiday_auth_limits(key,attempts,window) VALUES(?,1,?) ON CONFLICT(key) DO UPDATE SET attempts=CASE WHEN window=excluded.window THEN attempts+1 ELSE 1 END,window=excluded.window').bind(key,window).run();
+  const usage=await db.prepare('SELECT attempts FROM holiday_auth_limits WHERE key=?').bind(key).first();if(usage.attempts>20)fail('Du har læst mange rejseplaner. Vent ti minutter og prøv igen.',429);
+  const file=await env.BUCKET.get(`holiday-documents/${id}/${doc.id}`);if(!file)fail('Dokumentfilen findes ikke',404);
+  const bytes=await new Response(file.body).arrayBuffer();const result=await previewItinerary(env,new Blob([bytes],{type:'application/pdf'}));
+  const existing=(await db.prepare('SELECT data FROM holiday_events WHERE holiday_id=?').bind(id).all()).results.map(r=>itineraryFingerprint(JSON.parse(r.data)));
+  return reply({...result,documentId:doc.id,flights:result.flights.map(f=>({...f,duplicate:existing.includes(itineraryFingerprint(f))}))});
+ }
+ if(sub==='import-flights'&&method==='POST'){
+  editRole(m);const d=await body(request,240000);if(!validId(d.documentId)||!Array.isArray(d.flights)||!d.flights.length||d.flights.length>30)fail('Vælg mellem 1 og 30 flyvninger');
+  if(!await db.prepare('SELECT id FROM holiday_documents WHERE id=? AND holiday_id=?').bind(d.documentId,id).first())fail('Dokumentet findes ikke i denne ferie',404);
+  const flights=d.flights.map(f=>{if(f?.type!=='flight')fail('Kun flyvninger kan importeres');const value=validateEvent(f);if(!value.from||!value.to||!value.end)fail('Udfyld fra, til samt afgangs- og ankomstdato for alle valgte flyvninger');return value});
+  const current=(await db.prepare('SELECT id,data FROM holiday_events WHERE holiday_id=?').bind(id).all()).results;
+  const fingerprints=new Map(current.map(r=>[itineraryFingerprint(JSON.parse(r.data)),r.id]));const statements=[],ids=new Set();
+  for(const f of flights){const fp=itineraryFingerprint(f);let eventId=fingerprints.get(fp);
+   if(!eventId){const h=await hashToken(id+'|import|'+fp);eventId=h.slice(0,8)+'-'+h.slice(8,12)+'-'+h.slice(12,16)+'-'+h.slice(16,20)+'-'+h.slice(20,32)}
+   if(ids.has(eventId))continue;ids.add(eventId);
+   statements.push(db.prepare('INSERT OR IGNORE INTO holiday_events(id,holiday_id,data,version,updated) VALUES(?,?,?,1,?)').bind(eventId,id,JSON.stringify(f),Date.now()));
+   statements.push(db.prepare('INSERT OR IGNORE INTO holiday_event_documents(holiday_id,event_id,document_id) SELECT ?,?,? WHERE EXISTS(SELECT 1 FROM holiday_events WHERE id=? AND holiday_id=?)').bind(id,eventId,d.documentId,eventId,id));
+  }
+  if(current.length+[...ids].filter(eventId=>!current.some(r=>r.id===eventId)).length>1000)fail('Der er for mange planpunkter i ferien');
+  statements.push(db.prepare('UPDATE holidays SET updated=? WHERE id=?').bind(Date.now(),id));
+  const results=await db.batch(statements);const added=results.filter((r,i)=>i<results.length-1&&i%2===0).reduce((n,r)=>n+(r.meta?.changes||0),0);
+  return reply({added,skipped:flights.length-added});
+ }
  if(sub==='events'){
   editRole(m);
   if(method==='POST'&&!child){const d=validateEvent(await body(request)),eventId=uuid();const count=await db.prepare('SELECT COUNT(*) AS n FROM holiday_events WHERE holiday_id=?').bind(id).first();if(count.n>=1000)fail('En ferie kan have højst 1.000 planpunkter');await db.prepare('INSERT INTO holiday_events(id,holiday_id,data,version,updated) VALUES(?,?,?,1,?)').bind(eventId,id,JSON.stringify(d),Date.now()).run();return reply({id:eventId},201)}
   if(child&&validId(child)&&['PUT','DELETE'].includes(method)){
    const expected=version(request);
    if(method==='PUT'){const d=validateEvent(await body(request));changed(await db.prepare('UPDATE holiday_events SET data=?,version=version+1,updated=? WHERE id=? AND holiday_id=? AND version=?').bind(JSON.stringify(d),Date.now(),child,id,expected).run())}
-   else changed(await db.prepare('DELETE FROM holiday_events WHERE id=? AND holiday_id=? AND version=?').bind(child,id,expected).run());
+   else{const results=await db.batch([db.prepare('DELETE FROM holiday_event_documents WHERE holiday_id=? AND event_id=? AND EXISTS(SELECT 1 FROM holiday_events WHERE id=? AND holiday_id=? AND version=?)').bind(id,child,child,id,expected),db.prepare('DELETE FROM holiday_events WHERE id=? AND holiday_id=? AND version=?').bind(child,id,expected)]);changed(results[1])}
    return reply({ok:true});
   }
  }
@@ -135,7 +166,7 @@ async function portal({request,env,params}){
   if(method==='POST'&&!child){editRole(m);if(!env.BUCKET)fail('Dokumenter kræver den eksisterende R2-binding BUCKET',503);const type=request.headers.get('Content-Type')?.split(';')[0];if(!mimeTypes.has(type))fail('Vælg PDF, JPG, PNG eller WebP');const category=clean(url.searchParams.get('category'),30)||'other';if(!['ticket','hotel','insurance','other'].includes(category))fail('Ugyldig dokumentkategori');const eventId=clean(url.searchParams.get('event'),36);if(eventId&&!await db.prepare('SELECT id FROM holiday_events WHERE id=? AND holiday_id=?').bind(eventId,id).first())fail('Planpunktet findes ikke');const count=await db.prepare('SELECT COUNT(*) AS n,COALESCE(SUM(size),0) AS total FROM holiday_documents WHERE holiday_id=?').bind(id).first();if(count.n>=100)fail('En ferie kan have højst 100 dokumenter');const bytes=await readBytes(request,MAX_FILE);if(!validFile(bytes,type))fail('Filens indhold matcher ikke en understøttet PDF eller billedfil');if(count.total+bytes.length>1024*1024*1024)fail('Der er plads til højst 1 GB dokumenter pr. ferie');const name=clean(url.searchParams.get('name'),200,true).replace(/[\r\n\u0000-\u001f]/g,''),docId=uuid();await env.BUCKET.put(`holiday-documents/${id}/${docId}`,bytes,{httpMetadata:{contentType:type}});try{await db.prepare('INSERT INTO holiday_documents(id,holiday_id,name,type,size,category,event_id,uploader_id,created) VALUES(?,?,?,?,?,?,?,?,?)').bind(docId,id,name,type,bytes.length,category,eventId,user.id,Date.now()).run()}catch(e){await env.BUCKET.delete(`holiday-documents/${id}/${docId}`);throw e}return reply({id:docId},201)}
   if(validId(child)&&['GET','DELETE'].includes(method)){const doc=await db.prepare('SELECT * FROM holiday_documents WHERE id=? AND holiday_id=?').bind(child,id).first();if(!doc)fail('Dokumentet findes ikke',404);if(!env.BUCKET)fail('Dokumentlageret er ikke tilgængeligt',503);const key=`holiday-documents/${id}/${child}`;
    if(method==='GET'){const file=await env.BUCKET.get(key);if(!file)fail('Dokumentet findes ikke',404);return new Response(file.body,{headers:{'Content-Type':doc.type,'Content-Disposition':`attachment; filename="document.${doc.type==='application/pdf'?'pdf':doc.type.split('/')[1]}"; filename*=UTF-8''${encodeURIComponent(doc.name).replace(/'/g,'%27')}`,'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff','Content-Security-Policy':"default-src 'none'; sandbox"}})}
-   editRole(m);await env.BUCKET.delete(key);await db.prepare('DELETE FROM holiday_documents WHERE id=? AND holiday_id=?').bind(child,id).run();return reply({ok:true});
+   editRole(m);await env.BUCKET.delete(key);await db.batch([db.prepare('DELETE FROM holiday_event_documents WHERE holiday_id=? AND document_id=?').bind(id,child),db.prepare('DELETE FROM holiday_documents WHERE id=? AND holiday_id=?').bind(child,id)]);return reply({ok:true});
   }
  }
  fail('Ukendt handling',404);

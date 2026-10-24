@@ -76,3 +76,34 @@ test('portal administrators can manage holidays while ordinary accounts stay iso
  await expect(await call(env,`holidays/${id}/invites`,'POST',{email:'invited@example.com',role:'viewer'},adminCookie),201);
  assert.equal((await call(env,'auth/bootstrap','POST',{email:'attacker@example.com',password,name:'Attacker',token:'f'.repeat(64)})).status,404);
 });
+
+const sasText=`SAS — Travel itinerary\nBooking reference: ABC123\n02 February 2027\nSK973 Copenhagen CPH — Bangkok BKK\nDeparture: 02 February 2027 23:35\nArrival: 03 February 2027 16:05 (+1 day)\n20 February 2027\nSK974 Bangkok BKK — Copenhagen CPH\nDeparture: 20 February 2027 23:50\nArrival: 21 February 2027 06:40 (+1 day)\nAll times are local. Confirmed.`;
+const extracted={bookingReference:'ABC123',flights:[{from:'Copenhagen',fromCode:'CPH',to:'Bangkok',toCode:'BKK',airline:'SAS',flightNumber:'SK 973',pnr:'ABC123',departure:'2027-02-02T23:35',arrival:'2027-02-03T16:05',status:'confirmed',evidence:'SK973 Copenhagen CPH — Bangkok BKK'},{from:'Bangkok',fromCode:'BKK',to:'Copenhagen',toCode:'CPH',airline:'SAS',flightNumber:'SK974',pnr:'ABC123',departure:'2027-02-20T23:50',arrival:'2027-02-21T06:40',status:'confirmed'}],warnings:[]};
+async function bookingDoc(env,owner,id){const file=new TextEncoder().encode('%PDF-1.7\nSynthetic SAS booking fixture, not a real ticket.');return(await expect(await call(env,`holidays/${id}/documents?name=SAS-itinerary.pdf&category=ticket`,'POST',file,owner,{'Content-Type':'application/pdf'}),201)).id}
+function mockBookingAI(env,output=extracted){env.AI={toMarkdown:async input=>{assert.equal(input.blob.type,'application/pdf');assert.ok(input.blob.size>0);return{format:'markdown',data:sasText}},run:async(model,input)=>{assert.equal(model,'@cf/meta/llama-3.3-70b-instruct-fp8-fast');assert.match(input.messages[0].content,/UNTRUSTED DATA/);assert.match(input.messages[1].content,/ABC123/);return{response:JSON.stringify(output)}}}}
+test('SAS-style PDF preview preserves local overnight dates, PNR and all legs without saving flights',async()=>{
+ const env=environment(),owner=await register(env),id=await holiday(env,owner),doc=await bookingDoc(env,owner,id);mockBookingAI(env,{...extracted,flights:[...extracted.flights,extracted.flights[0]]});
+ const result=await expect(await call(env,`holidays/${id}/import-preview`,'POST',{documentId:doc},owner),200);assert.equal(result.flights.length,2);assert.equal(result.flights[0].reference,'ABC123');assert.equal(result.flights[0].flightNumber,'SK973');assert.equal(result.flights[0].start,'2027-02-02T23:35');assert.equal(result.flights[0].end,'2027-02-03T16:05');assert.equal(result.flights[0].startZone,'');assert.equal(result.flights[0].from,'CPH · Copenhagen');assert.ok(result.warnings.length);
+ const detail=await expect(await call(env,'holidays/'+id,'GET',null,owner),200);assert.equal(detail.events.length,0);assert.equal(detail.documents.length,1);
+});
+test('reviewed flights import atomically, link the PDF to all legs, and do not duplicate or overwrite on retry',async()=>{
+ const env=environment(),owner=await register(env),id=await holiday(env,owner),doc=await bookingDoc(env,owner,id);mockBookingAI(env);const result=await expect(await call(env,`holidays/${id}/import-preview`,'POST',{documentId:doc},owner),200);
+ result.flights[0].reference='COR123';const payload={documentId:doc,flights:result.flights};
+ const saved=await expect(await call(env,`holidays/${id}/import-flights`,'POST',payload,owner),200);assert.equal(saved.added,2);
+ let detail=await expect(await call(env,'holidays/'+id,'GET',null,owner),200);assert.equal(detail.events.length,2);assert.equal(detail.documents[0].event_ids.length,2);assert.ok(detail.events.some(e=>e.reference==='COR123'));assert.equal(detail.events[0].warnings,undefined);
+ const first=detail.events[0];await expect(await call(env,`holidays/${id}/events/${first.id}`,'PUT',{...first,notes:'Manually reviewed note'},owner,{'If-Match':'1'}),200);
+ const again=await expect(await call(env,`holidays/${id}/import-flights`,'POST',payload,owner),200);assert.deepEqual(again,{added:0,skipped:2});detail=await expect(await call(env,'holidays/'+id,'GET',null,owner),200);assert.equal(detail.events.length,2);assert.equal(detail.events.find(e=>e.id===first.id).notes,'Manually reviewed note');
+ assert.equal((await call(env,`holidays/${id}/events/${first.id}`,'DELETE',null,owner,{'If-Match':'1'})).status,409);assert.equal((await expect(await call(env,'holidays/'+id,'GET',null,owner),200)).documents[0].event_ids.length,2);
+ await expect(await call(env,`holidays/${id}/events/${first.id}`,'DELETE',null,owner,{'If-Match':'2'}),200);assert.equal((await expect(await call(env,'holidays/'+id,'GET',null,owner),200)).documents[0].event_ids.length,1);
+});
+test('PDF import rejects viewers, foreign documents, missing AI and incomplete reviewed flights',async()=>{
+ const env=environment(),owner=await register(env),id=await holiday(env,owner),other=await holiday(env,owner),doc=await bookingDoc(env,owner,id),{cookie:viewer}=await invited(env,owner,id);
+ assert.equal((await call(env,`holidays/${id}/import-preview`,'POST',{documentId:doc},viewer)).status,403);assert.equal((await call(env,`holidays/${other}/import-preview`,'POST',{documentId:doc},owner)).status,404);assert.equal((await call(env,`holidays/${id}/import-preview`,'POST',{documentId:doc},owner)).status,503);
+ mockBookingAI(env);assert.equal((await call(env,`holidays/${id}/import-flights`,'POST',{documentId:doc,flights:[{...flight,end:''}]},owner)).status,400);assert.equal((await call(env,`holidays/${id}/import-flights`,'POST',{documentId:doc,flights:[{...flight,end:'2027-02-02T16:00',type:'hotel'}]},owner)).status,400);
+ const details=await expect(await call(env,'holidays/'+id,'GET',null,owner),200);assert.equal(details.events.length,0);
+ env.AI.toMarkdown=async()=>({format:'error',error:'unreadable'});assert.equal((await call(env,`holidays/${id}/import-preview`,'POST',{documentId:doc},owner)).status,502);
+});
+test('AI itinerary sanitization never invents missing dates, rejects bad JSON and keeps segment-specific references',async()=>{
+ const {normalizeItinerary,previewItinerary}=await import('../itinerary-ai.js');const d=normalizeItinerary({bookingReference:'ABC123',flights:[{...extracted.flights[0],departure:'2027-02-30T23:35',arrival:null,pnr:'OTHER1',departureTimezone:'not-a-zone',role:'admin'}]});assert.equal(d.flights[0].start,'');assert.equal(d.flights[0].end,'');assert.equal(d.flights[0].startZone,'');assert.equal(d.flights[0].reference,'OTHER1');assert.equal(d.flights[0].role,undefined);assert.ok(d.flights[0].warnings.length>=2);
+ const env=environment();mockBookingAI(env);env.AI.run=async()=>({response:'not JSON'});await assert.rejects(()=>previewItinerary(env,new Blob(['%PDF-1.7'],{type:'application/pdf'})),/ufuldstændigt/);
+});
