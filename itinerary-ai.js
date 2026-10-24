@@ -1,3 +1,4 @@
+import {validPNR} from './booking-identities.mjs';
 import {normalizeTravellers} from './portal-plan.mjs';
 // Booking documents are untrusted data. This module extracts proposals only;
 // saving bookings is a separate, authenticated and explicitly confirmed action.
@@ -16,10 +17,10 @@ export function itineraryFingerprint(f){
 export function normalizeItinerary(result){
  if(!result||!['flights','hotels','tours'].some(key=>Array.isArray(result[key]))||['flights','hotels','tours'].some(key=>result[key]!=null&&!Array.isArray(result[key])))throw Error('AI-svaret indeholder ikke en brugbar liste af bookinger. Prøv igen.');
  const warnings=Array.isArray(result.warnings)?result.warnings.map(v=>text(v,250)).filter(Boolean).slice(0,10):[];
- const globalReference=text(result.bookingReference,120).toUpperCase();
+ const globalReference=validPNR(result.bookingReference);
  const flights=(result.flights||[]).filter(f=>f&&typeof f==='object').map(f=>{
-  const from=airport(f.from,f.fromCode),to=airport(f.to,f.toCode),flightNumber=text(f.flightNumber,40).toUpperCase().replace(/\s+/g,''),start=localDate(f.departure),end=localDate(f.arrival),reference=text(f.pnr,120).toUpperCase()||globalReference;
-  const issues=[];if(!start)issues.push('Afgangsdato eller afgangstid mangler/er usikker');if(!end)issues.push('Ankomstdato eller ankomsttid mangler/er usikker');if(!from||!to)issues.push('Fra eller til mangler');if(!reference)issues.push('PNR blev ikke fundet');if(!flightNumber)issues.push('Flynummer blev ikke fundet');
+  const from=airport(f.from,f.fromCode),to=airport(f.to,f.toCode),flightNumber=text(f.flightNumber,40).toUpperCase().replace(/\s+/g,''),start=localDate(f.departure),end=localDate(f.arrival),reference=validPNR(f.pnr)||globalReference;
+  const issues=[];if(text(f.pnr)&&!validPNR(f.pnr))issues.push('Referencen var ikke en PNR på seks tegn og er udeladt');if(!start)issues.push('Afgangsdato eller afgangstid mangler/er usikker');if(!end)issues.push('Ankomstdato eller ankomsttid mangler/er usikker');if(!from||!to)issues.push('Fra eller til mangler');if(!reference)issues.push('PNR blev ikke fundet');if(!flightNumber)issues.push('Flynummer blev ikke fundet');
   return {type:'flight',travellers:safeTravellers(f.travellers),title:((flightNumber?flightNumber+' · ':'')+(from||'Afgang')+' → '+(to||'Ankomst')).slice(0,200),from,to,flightNumber,start,end,reference,provider:text(f.airline,160),startZone:timeZone(f.departureTimezone),endZone:timeZone(f.arrivalTimezone),address:'',notes:text(f.notes,2000),status:['confirmed','cancelled'].includes(f.status)?f.status:'planned',warnings:issues,evidence:text(f.evidence,600)};
  }).filter(f=>f.from||f.to||f.flightNumber);
  const stays=(result.hotels||[]).filter(f=>f&&typeof f==='object').map(f=>{
