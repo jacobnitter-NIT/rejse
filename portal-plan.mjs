@@ -12,7 +12,7 @@ export function sortBookings(events){return [...events].sort((a,b)=>scheduleKey(
 export function sortHolidays(holidays){return [...holidays].sort((a,b)=>scheduleKey(a.start).localeCompare(scheduleKey(b.start))||String(a.name||'').localeCompare(String(b.name||'')))}
 export function sortDocuments(documents,events){return documents.map(doc=>{const ids=new Set(linkedEventIds(doc,events)),bookings=sortBookings(events.filter(e=>ids.has(e.id)));return{...doc,planAt:bookings[0]?.start||''}}).sort((a,b)=>scheduleKey(a.planAt).localeCompare(scheduleKey(b.planAt))||String(a.name||'').localeCompare(String(b.name||'')))}
 
-const labels={flight:{start:'Afgang',end:'Ankomst'},hotel:{start:'Check-ind',end:'Check-ud'},activity:{start:'Tur / oplevelse',end:'Turen slutter'},transport:{start:'Transport starter',end:'Transport ankommer'},note:{start:'Praktisk info',end:'Slut'}};
+const labels={car:{start:'Afhentning af bil',end:'Aflevering af bil'},flight:{start:'Afgang',end:'Ankomst'},hotel:{start:'Check-ind',end:'Check-ud'},activity:{start:'Tur / oplevelse',end:'Turen slutter'},transport:{start:'Transport starter',end:'Transport ankommer'},note:{start:'Praktisk info',end:'Slut'}};
 export function buildTimeline(events,{day='',query='',traveller='',documentEventIds=null}={}){
  const needle=query.trim().toLocaleLowerCase('da-DK'),points=[];
  const allowed=documentEventIds==null?null:new Set(documentEventIds);
@@ -26,7 +26,7 @@ export function buildTimeline(events,{day='',query='',traveller='',documentEvent
   function add(phase,at,dateOnly,label){if(!at||day&&dateOf(at)!==day)return;points.push({id:event.id+':'+phase,eventId:event.id,event,phase,at,day:dateOf(at),dateOnly:!!dateOnly,label,sortAt:scheduleKey(at)});}
 
   add('start',event.start,event.startDateOnly,type.start);
-  if(event.end&&(event.end!==event.start||['flight','hotel'].includes(event.type)))add('end',event.end,event.endDateOnly,type.end);
+  if(event.end&&(event.end!==event.start||['flight','hotel','car'].includes(event.type)))add('end',event.end,event.endDateOnly,type.end);
   if(day&&event.type==='hotel'&&dateOf(event.start)<day&&dateOf(event.end)>day)add('stay',day+'T00:00',true,'Ophold / overnatning');
  }
  return points.sort((a,b)=>a.day.localeCompare(b.day)||a.sortAt.localeCompare(b.sortAt)||a.eventId.localeCompare(b.eventId)||(a.phase==='start'?0:1)-(b.phase==='start'?0:1));
